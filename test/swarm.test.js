@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { normalizePaneConfigs, loadSwarmConfig } from "../src/config.js";
 import { buildLaunchCommand, buildAllLaunchCommands } from "../src/launch-builder.js";
 import { listPresetNames, loadPreset } from "../src/presets.js";
-import { GLOBAL_MODEL_ENV_VARS } from "../src/env.js";
+import { GLOBAL_MODEL_ENV_VARS, buildCleanPaneEnv } from "../src/env.js";
 import { runDoctor, validatePaneLaunches } from "../src/doctor.js";
 import { runDryRun } from "../src/dry-run.js";
 import { startSwarmLayout, stopSwarmLayout, formatPaneTitle } from "../src/layout.js";
@@ -792,4 +792,97 @@ test("Stage 4: swarm status reports live worker states during session and not ru
       fs.unlinkSync(tempConfigPath);
     }
   }
+});
+
+test("River AI models belong exclusively to Kilo Code; Claude Code uses Amazon Bedrock models & preserves AWS credentials", () => {
+  const riverModels = [
+    "river/deepseek-ai/DeepSeek-V4.1-Flash",
+    "river/Qwen/Qwen3.8-27B-FP8",
+    "river/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
+  ];
+
+  // 1. River AI models are valid for Kilo Code
+  for (const model of riverModels) {
+    const resKilo = checkModelCompatibility("kilocode", model);
+    assert.equal(resKilo.compatible, true, `Expected ${model} to be compatible with kilocode`);
+  }
+
+  // 2. River AI models are rejected with explicit warnings on Claude Code and other CLIs
+  for (const model of riverModels) {
+    const resClaude = checkModelCompatibility("claude", model);
+    assert.equal(resClaude.compatible, false);
+    assert.ok(
+      resClaude.warning.includes("River AI models"),
+      `Expected warning to mention River AI models, got: ${resClaude.warning}`
+    );
+    assert.ok(
+      resClaude.warning.includes("belong exclusively to Kilo Code"),
+      `Expected warning to mention Kilo Code exclusive ownership, got: ${resClaude.warning}`
+    );
+    assert.ok(
+      resClaude.warning.includes("Amazon Bedrock"),
+      `Expected warning to mention Amazon Bedrock models, got: ${resClaude.warning}`
+    );
+
+    const resGemini = checkModelCompatibility("gemini", model);
+    assert.equal(resGemini.compatible, false);
+    assert.ok(resGemini.warning.includes("belong exclusively to Kilo Code"));
+  }
+
+  // 3. Amazon Bedrock provided models and standard aliases are compatible with Claude Code
+  const bedrockClaudeModels = [
+    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "eu.anthropic.claude-3-7-sonnet-20250219-v1:0",
+    "apac.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "bedrock/anthropic.claude-3-sonnet",
+    "sonnet",
+    "opus",
+    "haiku",
+    "claude-3-5-sonnet-20241022"
+  ];
+
+  for (const model of bedrockClaudeModels) {
+    const res = checkModelCompatibility("claude", model);
+    assert.equal(res.compatible, true, `Expected ${model} to be compatible with claude`);
+  }
+
+  // 4. Incompatible arbitrary models with Claude Code produce clear warnings
+  const resInvalidClaude = checkModelCompatibility("claude", "gpt-4o-mini");
+  assert.equal(resInvalidClaude.compatible, false);
+  assert.ok(resInvalidClaude.warning.includes("Amazon Bedrock provided models"));
+
+  // 5. Verify clean environment preserves Amazon Bedrock credentials while stripping model overrides
+  const mockParentEnv = {
+    ANTHROPIC_MODEL: "override-model-to-strip",
+    CLAUDE_MODEL: "claude-model-to-strip",
+    CLAUDE_CODE_USE_BEDROCK: "1",
+    AWS_REGION: "us-west-2",
+    AWS_DEFAULT_REGION: "us-west-2",
+    AWS_PROFILE: "swarm-bedrock-profile",
+    AWS_ACCESS_KEY_ID: "ASIAEXAMPLEKEY123",
+    AWS_SECRET_ACCESS_KEY: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    AWS_SESSION_TOKEN: "mock-session-token-xyz"
+  };
+
+  const { env: cleanEnv, strippedEnvVars } = buildCleanPaneEnv(
+    { id: "orchestrator", cli: "claude", model: "anthropic.claude-3-5-sonnet-20241022-v2:0" },
+    loadPreset("claude"),
+    mockParentEnv
+  );
+
+  // Model override variables MUST be stripped
+  assert.equal(cleanEnv.ANTHROPIC_MODEL, undefined);
+  assert.equal(cleanEnv.CLAUDE_MODEL, undefined);
+  assert.ok(strippedEnvVars.includes("ANTHROPIC_MODEL"));
+  assert.ok(strippedEnvVars.includes("CLAUDE_MODEL"));
+
+  // Amazon Bedrock environment variables MUST be preserved
+  assert.equal(cleanEnv.CLAUDE_CODE_USE_BEDROCK, "1");
+  assert.equal(cleanEnv.AWS_REGION, "us-west-2");
+  assert.equal(cleanEnv.AWS_DEFAULT_REGION, "us-west-2");
+  assert.equal(cleanEnv.AWS_PROFILE, "swarm-bedrock-profile");
+  assert.equal(cleanEnv.AWS_ACCESS_KEY_ID, "ASIAEXAMPLEKEY123");
+  assert.equal(cleanEnv.AWS_SECRET_ACCESS_KEY, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY");
+  assert.equal(cleanEnv.AWS_SESSION_TOKEN, "mock-session-token-xyz");
 });

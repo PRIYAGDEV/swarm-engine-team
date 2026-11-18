@@ -13,13 +13,14 @@
       "https://kilo.ai CLI docs"
     ],
     "verified_at": "2026-11-18",
-    "notes": "Verified against locally installed kilocode v7.8.27. Top-level interactive TUI accepts -m/--model and --auto. Non-interactive execution uses the `run` subcommand (`kilocode run [message..]`), which defaults to non-interactive (-i/--interactive defaults to false) and accepts -m/--model and --auto."
+    "notes": "Verified against locally installed kilocode v7.8.27. Top-level interactive TUI accepts -m/--model and --auto. Non-interactive execution uses the `run` subcommand (`kilocode run [message..]`), which defaults to non-interactive (-i/--interactive defaults to false) and accepts -m/--model and --auto. Supports River AI models via river/<provider>/<model> (e.g. 'river/deepseek-ai/DeepSeek-V4.1-Flash', 'river/Qwen/Qwen3.8-27B-FP8', 'river/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4'). River AI models belong exclusively to Kilo Code."
   },
   "model_passing": {
     "method": "flag",
     "flag": "--model",
     "short_flag": "-m",
-    "format": "provider/model",
+    "format": "provider/model_or_river_model",
+    "notes": "Passes River AI models (e.g. 'river/<provider>/<model>') or OpenAI-compatible custom provider models.",
     "requires_subcommand": null,
     "env_var": null,
     "config_file": null

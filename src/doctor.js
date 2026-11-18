@@ -5,7 +5,7 @@
  * if panes meant to differ produce identical launch commands.
  */
 
-import { loadSwarmConfig } from "./config.js";
+import { loadSwarmConfig, checkModelCompatibility } from "./config.js";
 import { buildAllLaunchCommands } from "./launch-builder.js";
 
 /**
@@ -116,6 +116,13 @@ export function validatePaneLaunches(paneConfigs, launches) {
         `Pane "${launch.id}" uses preset "${launch.cli}" which is marked UNVERIFIED ` +
           `(CLI is not installed locally; verify flags with \`${launch.command} --help\`).`
       );
+    }
+
+    if (pane.model && pane.cli) {
+      const compat = checkModelCompatibility(pane.cli, pane.model);
+      if (!compat.compatible && compat.warning) {
+        warnings.push(`Pane "${launch.id}": ${compat.warning}`);
+      }
     }
   }
 

@@ -12,13 +12,14 @@
       "Claude Code CLI docs"
     ],
     "verified_at": "2026-11-18",
-    "notes": "Verified against locally installed claude 2.1.319. Accepts --model <model> in both interactive and non-interactive modes. Non-interactive mode uses -p / --print."
+    "notes": "Verified against locally installed claude 2.1.319. Accepts --model <model> in both interactive and non-interactive modes (-p / --print). Claude Code supports Anthropic models and Amazon Bedrock provided models (e.g. 'anthropic.claude-3-5-sonnet-20241022-v2:0', 'us.anthropic.claude-3-5-sonnet-20241022-v2:0', 'anthropic.claude-3-7-sonnet-20250219-v1:0', 'sonnet', 'opus', 'haiku') with AWS credentials or CLAUDE_CODE_USE_BEDROCK=1. River AI models belong exclusively to Kilo Code."
   },
   "model_passing": {
     "method": "flag",
     "flag": "--model",
     "short_flag": null,
-    "format": "alias_or_model_id",
+    "format": "alias_or_bedrock_model_id",
+    "notes": "Accepts Anthropic model aliases (e.g. 'sonnet', 'opus') or Amazon Bedrock model IDs (e.g. 'anthropic.claude-3-5-sonnet-20241022-v2:0', 'us.anthropic.claude-3-5-sonnet-20241022-v2:0').",
     "requires_subcommand": null,
     "env_var": "ANTHROPIC_MODEL",
     "config_file": null

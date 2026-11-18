@@ -37,6 +37,18 @@ export const GLOBAL_MODEL_ENV_VARS = Object.freeze([
 ]);
 
 /**
+ * Provider credentials and backend configuration variables:
+ * These variables are deliberately PRESERVED (never stripped) so each CLI
+ * can authenticate to its configured provider backend:
+ *   - Amazon Bedrock (used by Claude Code):
+ *       CLAUDE_CODE_USE_BEDROCK, AWS_REGION, AWS_DEFAULT_REGION, AWS_PROFILE,
+ *       AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN
+ *   - NVIDIA / OpenAI-compatible (used by Kilo Code):
+ *       NVIDIA_API_KEY, OPENAI_API_KEY, OPENAI_BASE_URL
+ * Only model-override variables that force or leak a model selection across panes are stripped.
+ */
+
+/**
  * Build a fresh, isolated environment object for a single pane.
  * Strips all parent model variables so no pane inherits a model from the parent shell,
  * then applies only that pane's own explicit env overrides and (if applicable) model env var.

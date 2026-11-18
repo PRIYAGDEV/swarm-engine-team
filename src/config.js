@@ -24,7 +24,10 @@ function deepFreeze(obj) {
 
 /**
  * Verify whether a model name is compatible with a given CLI.
- * Returns an object with { compatible: boolean, warning?: string }.
+ * Enforces:
+ *   - River AI models ("river/...") belong exclusively to Kilo Code.
+ *   - Claude Code uses Anthropic and Amazon Bedrock provided models
+ *     (e.g. "anthropic.claude-3-5-sonnet-20241022-v2:0", "us.anthropic.claude-3-5-sonnet-20241022-v2:0", "sonnet", "opus", "haiku").
  *
  * @param {string} cli
  * @param {string} model
@@ -32,21 +35,54 @@ function deepFreeze(obj) {
  */
 export function checkModelCompatibility(cli, model) {
   if (!cli || !model) return { compatible: true };
-  const c = cli.toLowerCase();
-  const m = model.toLowerCase();
+  const c = cli.toLowerCase().trim();
+  const m = model.toLowerCase().trim();
 
+  // Rule 1: River AI models belong exclusively to Kilo Code
+  const isRiverModel = m.startsWith("river/") || m.includes("/river/");
+  if (isRiverModel) {
+    if (c !== "kilocode" && c !== "kilo") {
+      if (c === "claude") {
+        return {
+          compatible: false,
+          warning:
+            `River AI models ("${model}") belong exclusively to Kilo Code. ` +
+            `Claude Code uses Amazon Bedrock provided models (e.g. "anthropic.claude-3-5-sonnet-20241022-v2:0", ` +
+            `"us.anthropic.claude-3-5-sonnet-20241022-v2:0", "sonnet", "opus", "haiku").`
+        };
+      }
+      return {
+        compatible: false,
+        warning: `River AI models ("${model}") belong exclusively to Kilo Code and cannot be used with CLI "${cli}".`
+      };
+    }
+    // River AI model on Kilo Code is valid!
+    return { compatible: true };
+  }
+
+  // Rule 2: Claude Code supports Anthropic & Amazon Bedrock provided models
   if (c === "claude") {
-    const fits =
+    const isBedrockModel =
+      m.startsWith("anthropic.claude") ||
+      m.includes(".anthropic.claude") || // cross-region inference profiles: us.anthropic.claude-*, eu.anthropic.claude-*
+      m.startsWith("bedrock/") ||
+      m.startsWith("arn:aws:bedrock");
+
+    const isClaudeAlias =
       m.includes("claude") ||
       m.includes("sonnet") ||
       m.includes("opus") ||
       m.includes("haiku");
-    if (!fits) {
+
+    if (!isBedrockModel && !isClaudeAlias) {
       return {
         compatible: false,
-        warning: `Model "${model}" does not match known Claude models (e.g. "sonnet", "opus", "claude-3-5-sonnet").`
+        warning:
+          `Model "${model}" does not match recognized Claude Code models or Amazon Bedrock provided models ` +
+          `(e.g. "sonnet", "anthropic.claude-3-5-sonnet-20241022-v2:0", "us.anthropic.claude-3-5-sonnet-20241022-v2:0").`
       };
     }
+    return { compatible: true };
   }
 
   if (c === "agy" || c === "antigravity") {
@@ -83,11 +119,11 @@ export function checkModelCompatibility(cli, model) {
     }
   }
 
-  if (c === "kilocode") {
+  if (c === "kilocode" || c === "kilo") {
     if (!m.includes("/") && !m.includes("kilo")) {
       return {
         compatible: false,
-        warning: `Model "${model}" does not include a provider prefix (e.g. "river/<model>").`
+        warning: `Model "${model}" does not include a provider prefix (e.g. River AI models: "river/<provider>/<model>").`
       };
     }
   }
@@ -123,12 +159,19 @@ function createPaneConfig(rawPane, { id, role, defaultCli, baseDir, forcedCli, o
     );
   }
 
-  // If a CLI is forced via --cli, verify model compatibility and warn if it does not fit
+  // Verify model compatibility and warn if it does not fit
   if (forcedCli && typeof rawPane.model === "string" && rawPane.model.trim() !== "") {
     const check = checkModelCompatibility(forcedCli, rawPane.model);
     if (!check.compatible && typeof onWarning === "function") {
       onWarning(
-        `Warning: Model "${rawPane.model}" for pane "${id}" may not be compatible with forced CLI "${forcedCli}".`
+        `Warning: Model "${rawPane.model}" for pane "${id}" may not be compatible with forced CLI "${forcedCli}". ${check.warning}`
+      );
+    }
+  } else if (resolvedCli && typeof rawPane.model === "string" && rawPane.model.trim() !== "") {
+    const check = checkModelCompatibility(resolvedCli, rawPane.model);
+    if (!check.compatible && typeof onWarning === "function") {
+      onWarning(
+        `Warning: Model "${rawPane.model}" for pane "${id}" may not be compatible with CLI "${resolvedCli}": ${check.warning}`
       );
     }
   }
