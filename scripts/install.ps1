@@ -72,6 +72,7 @@ if ($alreadyPresent) {
 
     if (-not $isTestMode) {
         [Environment]::SetEnvironmentVariable("Path", $resultingPath, [System.EnvironmentVariableTarget]::User)
+        Set-ItemProperty -Path 'HKCU:\Environment' -Name Path -Value $resultingPath -ErrorAction SilentlyContinue
     }
     Write-Host "Successfully added to User PATH: $TargetBinDir" -ForegroundColor Green
 }

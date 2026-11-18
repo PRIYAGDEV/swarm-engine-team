@@ -56,6 +56,7 @@ $resultingPath = $remaining -join ';'
 if ($removed.Count -gt 0) {
     if (-not $isTestMode) {
         [Environment]::SetEnvironmentVariable("Path", $resultingPath, [System.EnvironmentVariableTarget]::User)
+        Set-ItemProperty -Path 'HKCU:\Environment' -Name Path -Value $resultingPath -ErrorAction SilentlyContinue
     }
     Write-Host "Successfully removed from User PATH:" -ForegroundColor Green
     foreach ($r in $removed) {
