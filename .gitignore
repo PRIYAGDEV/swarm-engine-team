@@ -1,0 +1,10 @@
+# Dependencies
+node_modules/
+
+# Local user swarm configuration (may contain local paths or private model preferences)
+swarm.config.json
+
+# Environment and logs
+.env
+*.log
+.swarm-state.json

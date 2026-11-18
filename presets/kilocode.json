@@ -1,0 +1,40 @@
+{
+  "name": "kilocode",
+  "display_name": "Kilo Code CLI",
+  "command": "kilocode",
+  "aliases": ["kilo"],
+  "verified": true,
+  "verification": {
+    "installed_locally": true,
+    "installed_version": "7.8.27",
+    "verified_via": [
+      "kilocode --help",
+      "kilocode run --help",
+      "https://kilo.ai CLI docs"
+    ],
+    "verified_at": "2026-11-18",
+    "notes": "Verified against locally installed kilocode v7.8.27. Top-level interactive TUI accepts -m/--model and --auto. Non-interactive execution uses the `run` subcommand (`kilocode run [message..]`), which defaults to non-interactive (-i/--interactive defaults to false) and accepts -m/--model and --auto."
+  },
+  "model_passing": {
+    "method": "flag",
+    "flag": "--model",
+    "short_flag": "-m",
+    "format": "provider/model",
+    "requires_subcommand": null,
+    "env_var": null,
+    "config_file": null
+  },
+  "non_interactive": {
+    "type": "subcommand",
+    "subcommand": "run",
+    "flag": null,
+    "prompt_mode": "positional",
+    "auto_approve_flag": "--auto",
+    "notes": "Verified via `kilocode run --help`: `kilocode run [message..]` runs non-interactively by default."
+  },
+  "env_strip": [
+    "KILO_MODEL",
+    "KILOCODE_MODEL",
+    "OPENCODE_MODEL"
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "name": "aider",
+  "display_name": "Aider CLI",
+  "command": "aider",
+  "aliases": [],
+  "verified": false,
+  "verification": {
+    "installed_locally": false,
+    "installed_version": null,
+    "verified_via": [
+      "aider.chat CLI documentation (NOT verified with local `aider --help`)"
+    ],
+    "verified_at": "2026-11-18",
+    "notes": "UNVERIFIED: `aider` is not installed on this machine, so `aider --help` could not be executed locally. Flags are recorded from Aider docs and must be verified locally once installed."
+  },
+  "model_passing": {
+    "method": "flag",
+    "flag": "--model",
+    "short_flag": null,
+    "format": "provider/model_or_model_id",
+    "requires_subcommand": null,
+    "env_var": "AIDER_MODEL",
+    "config_file": ".aider.conf.yml"
+  },
+  "non_interactive": {
+    "type": "flag",
+    "subcommand": null,
+    "flag": "--message",
+    "short_flag": "-m",
+    "prompt_mode": "flag_value",
+    "auto_approve_flag": "--yes",
+    "notes": "From Aider docs (unverified locally): `--message` (`-m`) processes a single instruction and exits; `--yes` auto-confirms prompts."
+  },
+  "env_strip": [
+    "AIDER_MODEL",
+    "AIDER_WEAK_MODEL",
+    "AIDER_EDITOR_MODEL"
+  ]
+}

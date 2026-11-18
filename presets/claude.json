@@ -1,0 +1,44 @@
+{
+  "name": "claude",
+  "display_name": "Claude Code CLI",
+  "command": "claude",
+  "aliases": [],
+  "verified": true,
+  "verification": {
+    "installed_locally": true,
+    "installed_version": "2.1.319 (Claude Code)",
+    "verified_via": [
+      "claude --help",
+      "Claude Code CLI docs"
+    ],
+    "verified_at": "2026-11-18",
+    "notes": "Verified against locally installed claude 2.1.319. Accepts --model <model> in both interactive and non-interactive modes. Non-interactive mode uses -p / --print."
+  },
+  "model_passing": {
+    "method": "flag",
+    "flag": "--model",
+    "short_flag": null,
+    "format": "alias_or_model_id",
+    "requires_subcommand": null,
+    "env_var": "ANTHROPIC_MODEL",
+    "config_file": null
+  },
+  "non_interactive": {
+    "type": "flag",
+    "subcommand": null,
+    "flag": "--print",
+    "short_flag": "-p",
+    "prompt_mode": "positional",
+    "auto_approve_flag": "--dangerously-skip-permissions",
+    "notes": "Verified via `claude --help`: `-p, --print` prints response and exits for non-interactive output."
+  },
+  "env_strip": [
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "CLAUDE_MODEL",
+    "CLAUDE_CODE_MODEL"
+  ]
+}

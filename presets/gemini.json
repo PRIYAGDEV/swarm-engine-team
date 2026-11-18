@@ -1,0 +1,38 @@
+{
+  "name": "gemini",
+  "display_name": "Gemini CLI",
+  "command": "gemini",
+  "aliases": [],
+  "verified": false,
+  "verification": {
+    "installed_locally": false,
+    "installed_version": null,
+    "verified_via": [
+      "google-gemini/gemini-cli documentation (NOT verified with local `gemini --help`)"
+    ],
+    "verified_at": "2026-11-18",
+    "notes": "UNVERIFIED: `gemini` is not installed on this machine, so `gemini --help` could not be executed locally. Flags are recorded from Gemini CLI docs and must be verified locally once installed."
+  },
+  "model_passing": {
+    "method": "flag",
+    "flag": "--model",
+    "short_flag": "-m",
+    "format": "model_id",
+    "requires_subcommand": null,
+    "env_var": "GEMINI_MODEL",
+    "config_file": "~/.gemini/settings.json"
+  },
+  "non_interactive": {
+    "type": "flag",
+    "subcommand": null,
+    "flag": "--prompt",
+    "short_flag": "-p",
+    "prompt_mode": "flag_value",
+    "auto_approve_flag": null,
+    "notes": "From Gemini CLI docs (unverified locally): `-p` / `--prompt` runs Gemini CLI in headless non-interactive mode."
+  },
+  "env_strip": [
+    "GEMINI_MODEL",
+    "GOOGLE_GEMINI_MODEL"
+  ]
+}

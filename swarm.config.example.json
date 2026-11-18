@@ -1,0 +1,25 @@
+{
+  "default_cli": "kilocode",
+  "orchestrator": {
+    "cli": "claude",
+    "model": "sonnet",
+    "cwd": "."
+  },
+  "workers": [
+    {
+      "cli": "kilocode",
+      "model": "river/deepseek-ai/DeepSeek-V4.1-Flash",
+      "cwd": "."
+    },
+    {
+      "cli": "kilocode",
+      "model": "river/Qwen/Qwen3.8-27B-FP8",
+      "cwd": "."
+    },
+    {
+      "cli": "kilocode",
+      "model": "river/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+      "cwd": "."
+    }
+  ]
+}

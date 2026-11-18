@@ -1,0 +1,39 @@
+{
+  "name": "opencode",
+  "display_name": "OpenCode CLI",
+  "command": "opencode",
+  "aliases": [],
+  "verified": true,
+  "verification": {
+    "installed_locally": true,
+    "installed_version": "opencode v2.3.0",
+    "verified_via": [
+      "opencode --help",
+      "opencode run --help",
+      "https://opencode.ai CLI docs"
+    ],
+    "verified_at": "2026-11-18",
+    "notes": "Verified against locally installed opencode v2.3.0. Top-level `opencode --help` does NOT expose a --model flag; `opencode run --help` exposes `--model, -m string` (provider/model#variant) and `--auto`."
+  },
+  "model_passing": {
+    "method": "flag",
+    "flag": "--model",
+    "short_flag": "-m",
+    "format": "provider/model#variant",
+    "requires_subcommand": "run",
+    "env_var": null,
+    "config_file": "opencode.json"
+  },
+  "non_interactive": {
+    "type": "subcommand",
+    "subcommand": "run",
+    "flag": null,
+    "prompt_mode": "positional",
+    "auto_approve_flag": "--auto",
+    "notes": "Verified via `opencode run --help`: `opencode run [flags] [<message...>]` runs non-interactively and accepts --model and --auto."
+  },
+  "env_strip": [
+    "OPENCODE_MODEL",
+    "OPENCODE_CONFIG_CONTENT"
+  ]
+}

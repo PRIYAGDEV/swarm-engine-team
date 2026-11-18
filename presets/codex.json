@@ -1,0 +1,37 @@
+{
+  "name": "codex",
+  "display_name": "OpenAI Codex CLI",
+  "command": "codex",
+  "aliases": [],
+  "verified": false,
+  "verification": {
+    "installed_locally": false,
+    "installed_version": null,
+    "verified_via": [
+      "OpenAI Codex CLI documentation (NOT verified with local `codex --help`)"
+    ],
+    "verified_at": "2026-11-18",
+    "notes": "UNVERIFIED: `codex` is not installed on this machine, so `codex --help` and `codex exec --help` could not be executed locally. Flags are recorded from Codex CLI docs and must be verified locally once installed."
+  },
+  "model_passing": {
+    "method": "flag",
+    "flag": "--model",
+    "short_flag": "-m",
+    "format": "model_id",
+    "requires_subcommand": null,
+    "env_var": "CODEX_MODEL",
+    "config_file": "~/.codex/config.toml"
+  },
+  "non_interactive": {
+    "type": "subcommand",
+    "subcommand": "exec",
+    "flag": null,
+    "prompt_mode": "positional",
+    "auto_approve_flag": null,
+    "notes": "From Codex CLI docs (unverified locally): `codex exec` runs non-interactively."
+  },
+  "env_strip": [
+    "CODEX_MODEL",
+    "OPENAI_MODEL"
+  ]
+}
