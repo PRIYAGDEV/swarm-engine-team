@@ -52,7 +52,6 @@ function printHelp() {
       "  --cli <name>                       Force all panes to use the specified CLI (e.g. kilocode, claude)",
       "  --model <name>, -m <name>          Override active model (auto-detected from environment if omitted)",
       "  --task <text>, -t <text>           Initial task text (auto-resumed from last session or git if omitted)",
-      "  --boost, /boost                    Enable high-speed boost mode (fast refresh and auto-approval)",
       "  --models                           In doctor: print observable model and detection source",
       "  --background, -b                   Run session in background mode without taking over terminal",
       "  --config <path>, -c <path>         Explicit config path (defaults to ./swarm.config.json, then ~/.swarm/swarm.config.json)",
@@ -82,7 +81,6 @@ function parseArgs(argv) {
   let forcedModel = null;
   let showModels = false;
   let background = false;
-  let boost = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -110,10 +108,6 @@ function parseArgs(argv) {
     }
     if (arg === "--models") {
       showModels = true;
-      continue;
-    }
-    if (arg === "--boost" || arg === "/boost") {
-      boost = true;
       continue;
     }
     if (arg === "--background" || arg === "-b") {
@@ -236,12 +230,12 @@ function parseArgs(argv) {
     throw new Error(`Unknown argument "${arg}". Run \`swarm --help\` for usage.`);
   }
 
-  return { command, configPath, target, task, workerCount, forcedCli, forcedModel, showModels, background, boost };
+  return { command, configPath, target, task, workerCount, forcedCli, forcedModel, showModels, background };
 }
 
 async function main() {
   try {
-    const { command, configPath, target, task, workerCount, forcedCli, forcedModel, showModels, background, boost } = parseArgs(
+    const { command, configPath, target, task, workerCount, forcedCli, forcedModel, showModels, background } = parseArgs(
       process.argv.slice(2)
     );
 
@@ -315,8 +309,7 @@ async function main() {
         forcedCli,
         forcedModel,
         activeModel: activeEnvModel,
-        task,
-        boost
+        task
       };
 
       // In interactive terminal, start in-terminal dashboard

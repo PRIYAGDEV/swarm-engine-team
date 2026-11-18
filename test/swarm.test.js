@@ -1559,16 +1559,14 @@ test("In-terminal TUI session lifecycle: spawn, IPC dispatch, live status query,
   const session = new TuiSession({
     configPath: testConfigPath,
     baseDir: tempDir,
-    headless: true,
-    boost: true
+    headless: true
   });
 
   try {
     // 1. Start headless TUI session
     await session.start();
     assert.equal(session.running, true);
-    assert.equal(session.isBoost, true);
-    assert.equal(session.workingThresholdMs, 1500);
+    assert.equal(session.workingThresholdMs, 3000);
 
     // Verify .swarm/panes.json was created
     const panesMapPath = getPanesFilePath(tempDir);
@@ -1579,7 +1577,7 @@ test("In-terminal TUI session lifecycle: spawn, IPC dispatch, live status query,
     assert.equal(liveStatus.running, true);
     assert.equal(liveStatus.workerCount, 2);
     assert.equal(liveStatus.source, "ipc");
-    assert.ok(liveStatus.sessionName.includes("[BOOST]"));
+    assert.equal(liveStatus.sessionName, "swarm-engine-team");
 
     // 3. Dispatch task to worker-1 via Named Pipe IPC
     const dispatchRes1 = await dispatchTask({
@@ -1640,18 +1638,19 @@ test("In-terminal TUI session lifecycle: spawn, IPC dispatch, live status query,
   }
 });
 
-test("CLI parsing supports --boost, /boost, and key=val syntax for all flags", () => {
+test("CLI parsing supports key=val syntax for all flags (--model=val, --task=val, --workers=val)", () => {
   const scriptPath = path.resolve(REPO_ROOT, "bin", "swarm.js");
 
-  // 1. Swarm help documents --boost, /boost
+  // 1. Swarm help documents CLI usage
   const helpRes = spawnSync(process.execPath, [scriptPath, "--help"], {
     cwd: REPO_ROOT,
     encoding: "utf8"
   });
   assert.equal(helpRes.status, 0);
-  assert.ok(helpRes.stdout.includes("--boost, /boost"));
+  assert.ok(helpRes.stdout.includes("--workers <N>"));
+  assert.ok(helpRes.stdout.includes("--model <name>"));
 
-  // 2. Swarm dry-run accepts --model=val, --task=val, --workers=val, and /boost
+  // 2. Swarm dry-run accepts --model=val, --task=val, and --workers=val
   const dryRes = spawnSync(
     process.execPath,
     [
@@ -1659,8 +1658,7 @@ test("CLI parsing supports --boost, /boost, and key=val syntax for all flags", (
       "--dry-run",
       "--model=test-flag-model",
       "--task=test-flag-task",
-      "--workers=3",
-      "/boost"
+      "--workers=3"
     ],
     {
       cwd: REPO_ROOT,

@@ -36,9 +36,8 @@ export class TuiSession {
   constructor(options = {}) {
     this.options = options;
     this.baseDir = options.baseDir ?? process.cwd();
-    this.isBoost = Boolean(options.boost);
-    this.workingThresholdMs = options.workingThresholdMs ?? (this.isBoost ? 1500 : 3000);
-    this.renderIntervalMs = this.isBoost ? 50 : 100;
+    this.workingThresholdMs = options.workingThresholdMs ?? 3000;
+    this.renderIntervalMs = 100;
 
     const initialTaskResult = resolveInitialTask({
       explicitTask: options.task,
@@ -409,7 +408,7 @@ export class TuiSession {
     const workers = this.panes.filter((p) => p !== orch);
     const focusedId = this.panes[this.focusedIndex]?.id ?? orch.id;
 
-    const sessionTitle = this.isBoost ? "swarm-engine-team [BOOST]" : "swarm-engine-team";
+    const sessionTitle = "swarm-engine-team";
 
     const rendered = renderFullDashboard({
       terminalWidth: termWidth,
