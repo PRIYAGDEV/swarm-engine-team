@@ -140,7 +140,7 @@ export function checkModelCompatibility(cli, model) {
  * @param {object} meta - Metadata for this specific pane ({ id, role, defaultCli, baseDir, forcedCli, onWarning }).
  * @returns {object} Frozen, self-contained paneConfig.
  */
-function createPaneConfig(rawPane, { id, role, defaultCli, baseDir, forcedCli, onWarning }) {
+function createPaneConfig(rawPane, { id, role, defaultCli, baseDir, forcedCli, forcedModel, activeModel, onWarning }) {
   if (!rawPane || typeof rawPane !== "object" || Array.isArray(rawPane)) {
     throw new Error(`Invalid pane configuration for "${id}": expected an object.`);
   }
@@ -160,19 +160,36 @@ function createPaneConfig(rawPane, { id, role, defaultCli, baseDir, forcedCli, o
     );
   }
 
+  const rawConfigModel =
+    typeof rawPane.model === "string" && rawPane.model.trim() !== ""
+      ? rawPane.model.trim()
+      : null;
+
+  const rawLaunchModel =
+    typeof forcedModel === "string" && forcedModel.trim() !== ""
+      ? forcedModel.trim()
+      : null;
+
+  const rawActiveModel =
+    typeof activeModel === "string" && activeModel.trim() !== ""
+      ? activeModel.trim()
+      : null;
+
+  const resolvedModel = rawLaunchModel ?? rawConfigModel ?? rawActiveModel;
+
   // Verify model compatibility and warn if it does not fit
-  if (forcedCli && typeof rawPane.model === "string" && rawPane.model.trim() !== "") {
-    const check = checkModelCompatibility(forcedCli, rawPane.model);
+  if (forcedCli && typeof resolvedModel === "string" && resolvedModel.trim() !== "") {
+    const check = checkModelCompatibility(forcedCli, resolvedModel);
     if (!check.compatible && typeof onWarning === "function") {
       onWarning(
-        `Warning: Model "${rawPane.model}" for pane "${id}" may not be compatible with forced CLI "${forcedCli}". ${check.warning}`
+        `Warning: Model "${resolvedModel}" for pane "${id}" may not be compatible with forced CLI "${forcedCli}". ${check.warning}`
       );
     }
-  } else if (resolvedCli && typeof rawPane.model === "string" && rawPane.model.trim() !== "") {
-    const check = checkModelCompatibility(resolvedCli, rawPane.model);
+  } else if (resolvedCli && typeof resolvedModel === "string" && resolvedModel.trim() !== "") {
+    const check = checkModelCompatibility(resolvedCli, resolvedModel);
     if (!check.compatible && typeof onWarning === "function") {
       onWarning(
-        `Warning: Model "${rawPane.model}" for pane "${id}" may not be compatible with CLI "${resolvedCli}": ${check.warning}`
+        `Warning: Model "${resolvedModel}" for pane "${id}" may not be compatible with CLI "${resolvedCli}": ${check.warning}`
       );
     }
   }
@@ -187,7 +204,10 @@ function createPaneConfig(rawPane, { id, role, defaultCli, baseDir, forcedCli, o
     id: typeof rawPane.id === "string" && rawPane.id.trim() !== "" ? rawPane.id.trim() : id,
     role,
     cli: resolvedCli ?? "custom",
-    model: typeof rawPane.model === "string" ? rawPane.model : null,
+    model: resolvedModel,
+    config_model: rawConfigModel,
+    launch_model: rawLaunchModel,
+    active_model: rawActiveModel,
     cwd: resolvedCwd,
     non_interactive: Boolean(rawPane.non_interactive),
     auto_approve: Boolean(rawPane.auto_approve),
@@ -237,6 +257,16 @@ export function normalizePaneConfigs(rawConfig, baseDir = process.cwd(), overrid
       ? overrides.forcedCli.trim()
       : null;
 
+  const forcedModel =
+    typeof overrides.forcedModel === "string" && overrides.forcedModel.trim() !== ""
+      ? overrides.forcedModel.trim()
+      : null;
+
+  const activeModel =
+    typeof overrides.activeModel === "string" && overrides.activeModel.trim() !== ""
+      ? overrides.activeModel.trim()
+      : null;
+
   const onWarning = typeof overrides.onWarning === "function" ? overrides.onWarning : null;
 
   // Validate --workers N if provided
@@ -265,6 +295,8 @@ export function normalizePaneConfigs(rawConfig, baseDir = process.cwd(), overrid
         defaultCli,
         baseDir,
         forcedCli,
+        forcedModel,
+        activeModel,
         onWarning
       })
     );
@@ -295,6 +327,8 @@ export function normalizePaneConfigs(rawConfig, baseDir = process.cwd(), overrid
           defaultCli,
           baseDir,
           forcedCli,
+          forcedModel,
+          activeModel,
           onWarning
         })
       );

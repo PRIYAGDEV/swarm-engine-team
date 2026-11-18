@@ -43,6 +43,8 @@ export function runDryRun(options = {}) {
   const { configPath, panes } = loadSwarmConfig(options.configPath, {
     workerCount: options.workers,
     forcedCli: options.cli,
+    forcedModel: options.model,
+    activeModel: options.activeModel,
     onWarning: (w) => writeOut(w)
   });
   const launches = buildAllLaunchCommands(panes);

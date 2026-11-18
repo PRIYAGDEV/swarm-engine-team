@@ -17,6 +17,9 @@ import { runDryRun } from "../src/dry-run.js";
 import { startSwarmLayout, stopSwarmLayout } from "../src/layout.js";
 import { dispatchTask, parseDispatchLine } from "../src/dispatch.js";
 import { getSwarmStatus, printSwarmStatus } from "../src/status.js";
+import { TuiSession } from "../src/tui-session.js";
+import { sendIpcMessage } from "../src/ipc.js";
+import { detectActiveEnvironmentModel } from "../src/model-detect.js";
 
 function getVersion() {
   try {
@@ -34,20 +37,30 @@ function printHelp() {
       `Swarm Engine Team v${getVersion()}`,
       "",
       "Usage:",
-      "  swarm [--config <path>] [--workers N] [--cli <name>]",
-      "                                     Open orchestrator + worker grid in WezTerm",
+      "  swarm [--config <path>] [--workers N] [--cli <name>] [--model <name>] [--task <text>]",
+      "                                     Open dashboard in current terminal (Ctrl+Q to exit)",
       "  swarm status                       Inspect current session status and per-worker states",
       "  swarm send <target> \"<task>\"       Dispatch task to worker(s) (e.g. @worker-3, @all, @workers 1,2)",
-      "  swarm stop                         Close all active panes and verify no leftover processes/files",
-      "  swarm doctor [--config <path>]     Inspect per-pane CLI, command, model flag/env, cwd",
-      "  swarm --dry-run [--config <path>]  Print all pane launch commands without opening anything",
+      "  swarm stop                         Close all active panes and verify zero leftover processes",
+      "  swarm doctor [--models]            Inspect per-pane launch commands and observable models",
+      "  swarm --dry-run                    Print all pane launch commands without opening anything",
       "  swarm --version, -v                Print Swarm version",
       "  swarm help, --help, -h             Show this help message",
       "",
       "Flags:",
       "  --workers <N>, -w <N>              Override worker pane count (1-6)",
       "  --cli <name>                       Force all panes to use the specified CLI (e.g. kilocode, claude)",
+      "  --model <name>, -m <name>          Override active model (auto-detected from environment if omitted)",
+      "  --task <text>, -t <text>           Initial task text (auto-resumed from last session or git if omitted)",
+      "  --boost, /boost                    Enable high-speed boost mode (fast refresh and auto-approval)",
+      "  --models                           In doctor: print observable model and detection source",
+      "  --background, -b                   Run session in background mode without taking over terminal",
       "  --config <path>, -c <path>         Explicit config path (defaults to ./swarm.config.json, then ~/.swarm/swarm.config.json)",
+      "",
+      "Keybindings (In-Terminal Dashboard):",
+      "  Tab / Shift+Tab                    Cycle focused pane",
+      "  Typing                             Forwarded directly to focused pane",
+      "  Ctrl+Q                             Clean exit and return to shell prompt",
       "",
       "Aliases:",
       "  team <command>                     Short alias for `swarm`"
@@ -66,6 +79,10 @@ function parseArgs(argv) {
   let task = null;
   let workerCount = null;
   let forcedCli = null;
+  let forcedModel = null;
+  let showModels = false;
+  let background = false;
+  let boost = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -73,7 +90,7 @@ function parseArgs(argv) {
       return { command: "version" };
     }
     if (arg === "-h" || arg === "--help" || arg === "help") {
-      return { command: "help", configPath, workerCount, forcedCli };
+      return { command: "help", configPath, workerCount, forcedCli, forcedModel };
     }
     if (arg === "start") {
       command = "start";
@@ -89,6 +106,18 @@ function parseArgs(argv) {
     }
     if (arg === "doctor") {
       command = "doctor";
+      continue;
+    }
+    if (arg === "--models") {
+      showModels = true;
+      continue;
+    }
+    if (arg === "--boost" || arg === "/boost") {
+      boost = true;
+      continue;
+    }
+    if (arg === "--background" || arg === "-b") {
+      background = true;
       continue;
     }
     if (arg === "--dry-run") {
@@ -108,6 +137,15 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg.startsWith("--workers=") || arg.startsWith("-w=")) {
+      const val = arg.slice(arg.indexOf("=") + 1).trim();
+      const parsed = parseInt(val, 10);
+      if (isNaN(parsed) || parsed < 1 || parsed > 6) {
+        throw new Error(`Invalid worker count: "${val}". Must be an integer between 1 and 6.`);
+      }
+      workerCount = parsed;
+      continue;
+    }
     if (arg === "--cli") {
       const next = argv[i + 1];
       if (!next) {
@@ -115,6 +153,44 @@ function parseArgs(argv) {
       }
       forcedCli = next.trim();
       i += 1;
+      continue;
+    }
+    if (arg.startsWith("--cli=")) {
+      forcedCli = arg.slice(arg.indexOf("=") + 1).trim();
+      continue;
+    }
+    if (arg === "--model" || arg === "-m") {
+      const next = argv[i + 1];
+      if (!next || next.startsWith("-")) {
+        throw new Error(`Flag "${arg}" requires a model name.`);
+      }
+      forcedModel = next.trim();
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--model=") || arg.startsWith("-m=")) {
+      const val = arg.slice(arg.indexOf("=") + 1).trim();
+      if (!val) {
+        throw new Error(`Flag "${arg}" requires a model name.`);
+      }
+      forcedModel = val;
+      continue;
+    }
+    if (arg === "--task" || arg === "-t") {
+      const next = argv[i + 1];
+      if (!next || next.startsWith("-")) {
+        throw new Error(`Flag "${arg}" requires a task description.`);
+      }
+      task = next.trim();
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--task=") || arg.startsWith("-t=")) {
+      const val = arg.slice(arg.indexOf("=") + 1).trim();
+      if (!val) {
+        throw new Error(`Flag "${arg}" requires a task description.`);
+      }
+      task = val;
       continue;
     }
     if (arg === "send") {
@@ -153,17 +229,24 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg.startsWith("--config=") || arg.startsWith("-c=")) {
+      configPath = path.resolve(process.cwd(), arg.slice(arg.indexOf("=") + 1).trim());
+      continue;
+    }
     throw new Error(`Unknown argument "${arg}". Run \`swarm --help\` for usage.`);
   }
 
-  return { command, configPath, target, task, workerCount, forcedCli };
+  return { command, configPath, target, task, workerCount, forcedCli, forcedModel, showModels, background, boost };
 }
 
 async function main() {
   try {
-    const { command, configPath, target, task, workerCount, forcedCli } = parseArgs(
+    const { command, configPath, target, task, workerCount, forcedCli, forcedModel, showModels, background, boost } = parseArgs(
       process.argv.slice(2)
     );
+
+    // Auto-detect model from active environment if no explicit --model flag passed
+    const activeEnvModel = detectActiveEnvironmentModel();
 
     if (command === "version") {
       console.log(`swarm-engine-team v${getVersion()}`);
@@ -185,18 +268,35 @@ async function main() {
     }
 
     if (command === "doctor") {
-      const result = runDoctor({ configPath, workers: workerCount, cli: forcedCli });
+      const result = runDoctor({
+        configPath,
+        workers: workerCount,
+        cli: forcedCli,
+        model: forcedModel,
+        activeModel: activeEnvModel,
+        models: showModels
+      });
       process.exitCode = result.exitCode;
       return;
     }
 
     if (command === "dry-run") {
-      const result = runDryRun({ configPath, workers: workerCount, cli: forcedCli });
+      const result = runDryRun({
+        configPath,
+        workers: workerCount,
+        cli: forcedCli,
+        model: forcedModel,
+        activeModel: activeEnvModel
+      });
       process.exitCode = result.exitCode;
       return;
     }
 
     if (command === "stop") {
+      // Notify active IPC server to stop if running
+      try {
+        await sendIpcMessage({ command: "stop", target: "@all", task: "__swarm_stop__" }).catch(() => {});
+      } catch {}
       await stopSwarmLayout();
       process.exitCode = 0;
       return;
@@ -209,7 +309,31 @@ async function main() {
     }
 
     if (command === "start") {
-      await startSwarmLayout({ configPath, workers: workerCount, cli: forcedCli });
+      const sessionOptions = {
+        configPath,
+        workerCount,
+        forcedCli,
+        forcedModel,
+        activeModel: activeEnvModel,
+        task,
+        boost
+      };
+
+      // In interactive terminal, start in-terminal dashboard
+      if (process.stdin.isTTY && !background) {
+        const session = new TuiSession(sessionOptions);
+        await session.start();
+        await session.waitUntilExit();
+      } else {
+        // In background or non-interactive mode, launch headless session without hanging shell
+        const session = new TuiSession({
+          ...sessionOptions,
+          headless: true
+        });
+        await session.start();
+        console.log("Swarm Engine Team: Active in-terminal session running in background.");
+        console.log("Use `swarm status` to observe states, `swarm send` to dispatch, or `swarm stop` to terminate.");
+      }
       process.exitCode = 0;
     }
   } catch (err) {

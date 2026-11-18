@@ -24,6 +24,7 @@ import {
   setWezTermWindowTitle
 } from "./wezterm.js";
 import { loadPanesMap, getPanesFilePath, SWARM_DIR } from "./state.js";
+import { sendIpcMessage } from "./ipc.js";
 
 export const SESSION_NAME = "swarm-engine-team";
 export const STATUS_FILENAME = "status.json";
@@ -270,6 +271,23 @@ export async function getSwarmStatus(options = {}) {
   const baseDir = options.baseDir ?? process.cwd();
   const weztermPath = options.weztermPath ?? findWezTerm();
   const stabilitySec = options.stabilitySec ?? DEFAULT_STABILITY_SECONDS;
+
+  // 1. Check active Named Pipe IPC session first (in-terminal TUI session)
+  try {
+    const ipcRes = await sendIpcMessage({ command: "status" }, { timeoutMs: 1200 });
+    if (ipcRes && ipcRes.ok && ipcRes.running) {
+      return {
+        running: true,
+        sessionName: ipcRes.sessionName ?? SESSION_NAME,
+        workerCount: ipcRes.workerCount ?? (ipcRes.workers?.length || 0),
+        workers: ipcRes.workers ?? [],
+        activeTask: ipcRes.activeTask,
+        source: "ipc"
+      };
+    }
+  } catch {
+    // IPC not running, continue with WezTerm status inspection
+  }
 
   const panesMap = loadPanesMap(baseDir);
   if (!panesMap || typeof panesMap !== "object") {

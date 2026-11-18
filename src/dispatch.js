@@ -20,6 +20,8 @@
 import { findWezTerm, runWezTermCli, getWezTermNotFoundMessage } from "./wezterm.js";
 import { loadPanesMap } from "./state.js";
 import { recordTaskDispatched, getSwarmStatus } from "./status.js";
+import { sendIpcMessage } from "./ipc.js";
+import { saveLastTask } from "./task-pickup.js";
 
 /**
  * Parse a raw input line using the @target syntax into target and task components.
@@ -233,6 +235,35 @@ export async function sendTextToPane(weztermPath, paneId, taskText) {
 export async function dispatchTask(options) {
   const log = options.log ?? ((msg) => console.log(msg));
   const baseDir = options.baseDir ?? process.cwd();
+
+  // Try Named Pipe IPC first (used by in-terminal TUI session)
+  let ipcConnected = false;
+  try {
+    const ipcRes = await sendIpcMessage({
+      target: options.target,
+      task: options.task
+    });
+    ipcConnected = true;
+    if (ipcRes && ipcRes.ok) {
+      if (options.task && options.task !== "__swarm_stop__") {
+        saveLastTask(options.task, baseDir);
+      }
+      for (const d of ipcRes.delivered ?? []) {
+        log(`[dispatch] Sent task to ${d.worker}: "${options.task.replace(/\r?\n/g, "\\n")}"`);
+      }
+      return ipcRes;
+    }
+    if (ipcRes && !ipcRes.ok) {
+      throw new Error(ipcRes.error || "Dispatch rejected by active session.");
+    }
+  } catch (err) {
+    // If IPC connected and returned an error, rethrow directly (do NOT fall back to WezTerm)
+    if (ipcConnected || (err.message && !err.message.includes("No active Swarm session found"))) {
+      throw err;
+    }
+    // Otherwise fallback to WezTerm session if IPC is not running
+  }
+
   const weztermPath = options.weztermPath ?? findWezTerm();
 
   if (!weztermPath) {
@@ -267,6 +298,10 @@ export async function dispatchTask(options) {
 
   // Refresh WezTerm status bar with the newly working workers
   await getSwarmStatus({ baseDir, weztermPath }).catch(() => {});
+
+  if (options.task) {
+    saveLastTask(options.task, baseDir);
+  }
 
   return {
     ok: true,

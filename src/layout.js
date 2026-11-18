@@ -36,6 +36,7 @@ import {
   clearPanesMap
 } from "./state.js";
 import { clearStatusState, getSwarmStatus } from "./status.js";
+import { resolveInitialTask, saveLastTask } from "./task-pickup.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -126,9 +127,20 @@ export async function startSwarmLayout(options = {}) {
     throw new Error(errorMsg);
   }
 
+  const baseDir = options.baseDir ?? process.cwd();
+  const initialTask = resolveInitialTask({
+    explicitTask: options.task,
+    baseDir
+  });
+  if (initialTask.task) {
+    saveLastTask(initialTask.task, baseDir);
+  }
+
   const { configPath, source, panes: paneConfigs } = loadSwarmConfig(options.configPath, {
     workerCount: options.workers,
     forcedCli: options.cli,
+    forcedModel: options.model,
+    activeModel: options.activeModel,
     onWarning: log
   });
   const launches = buildAllLaunchCommands(paneConfigs);
@@ -143,15 +155,16 @@ export async function startSwarmLayout(options = {}) {
   log(`Workers:      ${workerLaunches.length} pane(s)`);
 
   const orchArgs = buildPaneSpawnArgs(orchLaunch);
+  const workspace = options.workspace ?? "swarm";
 
-  log(`[layout] Spawning orchestrator pane in WezTerm (workspace: swarm)...`);
-  // 1. Spawn orchestrator into a new window in the 'swarm' workspace
+  log(`[layout] Spawning orchestrator pane in WezTerm (workspace: ${workspace})...`);
+  // 1. Spawn orchestrator into a new window in the specified workspace
   const s0 = await runWezTermCli(weztermPath, [
     "cli",
     "spawn",
     "--new-window",
     "--workspace",
-    "swarm",
+    workspace,
     "--cwd",
     orchLaunch.cwd,
     "--",
@@ -417,7 +430,7 @@ export async function startSwarmLayout(options = {}) {
   let guiPid = null;
   const guiExe = findWezTermGui() ?? weztermPath;
   try {
-    const guiProcess = spawn(guiExe, ["start", "--workspace", "swarm", "--attach"], {
+    const guiProcess = spawn(guiExe, ["start", "--workspace", workspace, "--attach"], {
       detached: true,
       stdio: "ignore"
     });
@@ -440,6 +453,7 @@ export async function startSwarmLayout(options = {}) {
 
   // Save session state to disk for clean shutdown via `swarm stop`
   saveSessionState({
+    workspace,
     guiPid,
     configPath,
     panes: createdPanes
@@ -479,7 +493,7 @@ export async function startSwarmLayout(options = {}) {
  * @param {number|null} [params.guiPid]
  * @returns {Promise<{ clean: boolean, leftover: { processes: string[], tempFiles: string[], openPorts: string[] } }>}
  */
-export async function verifyCleanShutdown({ baseDir = process.cwd(), weztermPath = null, guiPid = null } = {}) {
+export async function verifyCleanShutdown({ baseDir = process.cwd(), weztermPath = null, guiPid = null, workspace = "swarm" } = {}) {
   const leftoverProcesses = [];
   const leftoverFiles = [];
   const leftoverPorts = [];
@@ -497,9 +511,9 @@ export async function verifyCleanShutdown({ baseDir = process.cwd(), weztermPath
   if (weztermPath) {
     try {
       const remainingPanes = await listWezTermPanes(weztermPath);
-      const swarmPanes = remainingPanes.filter((p) => p.workspace === "swarm");
+      const swarmPanes = remainingPanes.filter((p) => p.workspace === workspace);
       for (const p of swarmPanes) {
-        leftoverProcesses.push(`WezTerm pane ${p.pane_id} in workspace "swarm"`);
+        leftoverProcesses.push(`WezTerm pane ${p.pane_id} in workspace "${workspace}"`);
       }
     } catch {
       // WezTerm multiplexer not running or stopped
@@ -561,10 +575,11 @@ export async function stopSwarmLayout(options = {}) {
   const baseDir = options.baseDir ?? process.cwd();
 
   const state = loadSessionState();
+  const workspace = options.workspace ?? state?.workspace ?? "swarm";
 
   if (!state && !weztermPath) {
     log("No active swarm session found.");
-    const check = await verifyCleanShutdown({ baseDir, weztermPath: null, guiPid: null });
+    const check = await verifyCleanShutdown({ baseDir, weztermPath: null, guiPid: null, workspace });
     log("Stop verification: clean (0 leftover processes, 0 temp files, 0 open ports).");
     return { ok: true, closedCount: 0, clean: true, leftover: check.leftover };
   }
@@ -585,12 +600,12 @@ export async function stopSwarmLayout(options = {}) {
     }
   }
 
-  // Also verify if any remaining panes in workspace 'swarm' are still open and close them
+  // Also verify if any remaining panes in workspace are still open and close them
   if (weztermPath) {
     try {
       const remaining = await listWezTermPanes(weztermPath);
       for (const p of remaining) {
-        if (p.workspace === "swarm" && !killedPaneIds.has(p.pane_id)) {
+        if (p.workspace === workspace && !killedPaneIds.has(p.pane_id)) {
           const killed = await killWezTermPane(weztermPath, p.pane_id);
           if (killed) {
             killedPaneIds.add(p.pane_id);
@@ -623,7 +638,8 @@ export async function stopSwarmLayout(options = {}) {
   const check = await verifyCleanShutdown({
     baseDir,
     weztermPath,
-    guiPid: state?.guiPid ?? null
+    guiPid: state?.guiPid ?? null,
+    workspace
   });
 
   if (check.clean) {

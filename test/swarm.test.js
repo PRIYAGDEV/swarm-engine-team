@@ -25,6 +25,11 @@ import { findWezTerm, listWezTermPanes } from "../src/wezterm.js";
 import { dispatchTask, parseDispatchLine, resolveTargetWorkers } from "../src/dispatch.js";
 import { loadPanesMap, getPanesFilePath } from "../src/state.js";
 import { getSwarmStatus, formatStatusBar, evaluateWorkerState } from "../src/status.js";
+import { detectPaneModel, formatModelsReport, detectActiveEnvironmentModel, extractModelFromArgs } from "../src/model-detect.js";
+import { renderFullDashboard, renderBox, renderTreeConnectors, stripAnsi } from "../src/tui-layout.js";
+import { resolveInitialTask, saveLastTask, loadLastTask, clearLastTask, getLastTaskFilePath, getGitTaskContext } from "../src/task-pickup.js";
+import { TuiSession } from "../src/tui-session.js";
+import { sendIpcMessage } from "../src/ipc.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -331,6 +336,7 @@ test("Stage 2: WezTerm layout opens with stub CLI, shows distinct models per pan
     const logs = [];
     const startResult = await startSwarmLayout({
       configPath: tempConfigPath,
+      workspace: "swarm-test-s2",
       log: (msg) => logs.push(msg)
     });
 
@@ -358,9 +364,10 @@ test("Stage 2: WezTerm layout opens with stub CLI, shows distinct models per pan
     assert.ok(activePanes.length >= 4);
 
     // Cleanly stop the swarm session and close all panes
-    const stopResult = await stopSwarmLayout({ log: (msg) => logs.push(msg) });
+    const stopResult = await stopSwarmLayout({ workspace: "swarm-test-s2", log: (msg) => logs.push(msg) });
     assert.equal(stopResult.ok, true);
     assert.equal(stopResult.closedCount, 4);
+    await new Promise((r) => setTimeout(r, 600));
   } finally {
     if (fs.existsSync(tempConfigPath)) {
       fs.unlinkSync(tempConfigPath);
@@ -466,7 +473,7 @@ test("Stage 3: automated task dispatch delivers to worker-3 only, then broadcast
 
   try {
     // 1. Start layout
-    const startResult = await startSwarmLayout({ configPath: tempConfigPath });
+    const startResult = await startSwarmLayout({ configPath: tempConfigPath, workspace: "swarm-test-s3" });
     assert.equal(startResult.ok, true);
 
     // 2. Verify .swarm/panes.json was created and contains valid mappings
@@ -542,6 +549,40 @@ test("Stage 3: automated task dispatch delivers to worker-3 only, then broadcast
     // Worker 3 must also retain its previous task
     assert.ok(content3After.includes(taskWorker3));
 
+    // 4b. Dispatch task to a list of workers (@workers 1,2)
+    const taskList = "list-worker-1-and-2-only";
+    const resList = await dispatchTask({
+      target: "@workers 1,2",
+      task: taskList,
+      baseDir: REPO_ROOT,
+      weztermPath
+    });
+    assert.equal(resList.ok, true);
+    assert.equal(resList.delivered.length, 2);
+    assert.deepEqual(resList.delivered.map((d) => d.worker).sort(), ["worker-1", "worker-2"]);
+
+    // Allow delivery
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    const content1List = fs.existsSync(inbox1) ? fs.readFileSync(inbox1, "utf8") : "";
+    const content2List = fs.existsSync(inbox2) ? fs.readFileSync(inbox2, "utf8") : "";
+    const content3List = fs.existsSync(inbox3) ? fs.readFileSync(inbox3, "utf8") : "";
+
+    // PROVE: Worker 1 and Worker 2 received the list task, Worker 3 did NOT
+    assert.ok(
+      content1List.includes(taskList),
+      `Worker 1 should have received "${taskList}", got: "${content1List}"`
+    );
+    assert.ok(
+      content2List.includes(taskList),
+      `Worker 2 should have received "${taskList}", got: "${content2List}"`
+    );
+    assert.equal(
+      content3List.includes(taskList),
+      false,
+      "Worker 3 should NOT receive list task directed only to 1,2"
+    );
+
     // 5. Test unknown target rejection
     await assert.rejects(
       async () => {
@@ -561,9 +602,10 @@ test("Stage 3: automated task dispatch delivers to worker-3 only, then broadcast
     );
 
     // 6. Stop layout cleanly and verify .swarm/panes.json is deleted
-    const stopResult = await stopSwarmLayout({ log: () => {} });
+    const stopResult = await stopSwarmLayout({ workspace: "swarm-test-s3", log: () => {} });
     assert.equal(stopResult.ok, true);
     assert.equal(fs.existsSync(panesMapPath), false, "Expected .swarm/panes.json to be deleted on stop");
+    await new Promise((r) => setTimeout(r, 600));
   } finally {
     for (const f of [tempConfigPath, inbox1, inbox2, inbox3]) {
       if (fs.existsSync(f)) fs.unlinkSync(f);
@@ -765,7 +807,7 @@ test("Stage 4: swarm status reports live worker states during session and not ru
   fs.writeFileSync(tempConfigPath, JSON.stringify(testConfig, null, 2), "utf8");
 
   try {
-    const startResult = await startSwarmLayout({ configPath: tempConfigPath });
+    const startResult = await startSwarmLayout({ configPath: tempConfigPath, workspace: "swarm-test-s4" });
     assert.equal(startResult.ok, true);
 
     await new Promise((r) => setTimeout(r, 800));
@@ -779,8 +821,9 @@ test("Stage 4: swarm status reports live worker states during session and not ru
     assert.equal(statusLive.workers[1].state, "idle");
 
     // Clean up
-    const stopResult = await stopSwarmLayout({ log: () => {} });
+    const stopResult = await stopSwarmLayout({ workspace: "swarm-test-s4", log: () => {} });
     assert.equal(stopResult.ok, true);
+    await new Promise((r) => setTimeout(r, 600));
 
     // Status after shutdown must report not running
     const statusAfter = await getSwarmStatus({ baseDir: REPO_ROOT });
@@ -1147,4 +1190,485 @@ test("Stage 5: stopSwarmLayout verifies clean shutdown (no leftover processes, t
   assert.equal(stopResult.ok, true);
   assert.equal(stopResult.clean, true);
   assert.ok(logs.some((l) => l.includes("clean")));
+});
+
+test("Model detection strictly follows observable source priority: launch_flag -> cli_status -> configured -> unknown", () => {
+  // Priority 1: Launch flag present in args overrides everything else
+  const p1 = detectPaneModel({
+    cli: "custom",
+    args: ["--model", "flag-override-model", "--verbose"],
+    configModel: "config-model",
+    cliStatusModel: "status-model"
+  });
+  assert.equal(p1.model, "flag-override-model");
+  assert.equal(p1.source, "launch_flag");
+  assert.equal(p1.mismatch, true); // differs from configModel
+
+  // Priority 1 with -m shorthand
+  const p1Short = detectPaneModel({
+    cli: "custom",
+    args: ["-m", "short-flag-model"],
+    configModel: "short-flag-model"
+  });
+  assert.equal(p1Short.model, "short-flag-model");
+  assert.equal(p1Short.source, "launch_flag");
+  assert.equal(p1Short.mismatch, false);
+
+  // Priority 2: CLI status query when no launch flag is in args
+  const p2 = detectPaneModel({
+    cli: "custom",
+    args: ["--verbose"],
+    configModel: "config-model",
+    cliStatusModel: "cli-reported-model"
+  });
+  assert.equal(p2.model, "cli-reported-model");
+  assert.equal(p2.source, "cli_status");
+  assert.equal(p2.mismatch, true);
+
+  // Priority 3: Config value when no launch flag and no CLI status
+  const p3 = detectPaneModel({
+    cli: "custom",
+    args: ["--verbose"],
+    configModel: "configured-model",
+    cliStatusModel: null
+  });
+  assert.equal(p3.model, "configured-model");
+  assert.equal(p3.source, "configured");
+  assert.equal(p3.mismatch, false);
+
+  // Priority 4: Unknown when nothing answers (never invented defaults)
+  const p4 = detectPaneModel({
+    cli: "custom",
+    args: [],
+    configModel: null,
+    cliStatusModel: null
+  });
+  assert.equal(p4.model, "unknown");
+  assert.equal(p4.source, "unknown");
+  assert.equal(p4.mismatch, false);
+});
+
+test("Model detection detects mismatch between launch flag and config, and warns in doctor report", () => {
+  // 1. Mismatch detected when launch flag and config differ
+  const mismatchDetection = detectPaneModel({
+    cli: "kilocode",
+    args: ["--model", "river/Qwen/Qwen3.8-27B-FP8"],
+    configModel: "river/deepseek-ai/DeepSeek-V4.1-Flash"
+  });
+  assert.equal(mismatchDetection.mismatch, true);
+  assert.ok(mismatchDetection.warning.includes("Model mismatch for CLI \"kilocode\""));
+  assert.ok(mismatchDetection.warning.includes("Launch flag specifies \"river/Qwen/Qwen3.8-27B-FP8\""));
+  assert.ok(mismatchDetection.warning.includes("config specifies \"river/deepseek-ai/DeepSeek-V4.1-Flash\""));
+
+  // 2. formatModelsReport formats warning clearly
+  const panes = [
+    {
+      id: "worker-1",
+      role: "worker",
+      cli: "kilocode",
+      detected: mismatchDetection
+    }
+  ];
+  const report = formatModelsReport(panes);
+  assert.ok(report.includes("[source: launch_flag]"));
+  assert.ok(report.includes("! WARNING:"));
+  assert.ok(report.includes("Doctor check: WARNING — One or more panes have model mismatches"));
+
+  // 3. When launch flag matches config, no warning is generated
+  const matchingDetection = detectPaneModel({
+    cli: "claude",
+    args: ["--model", "sonnet"],
+    configModel: "sonnet"
+  });
+  assert.equal(matchingDetection.mismatch, false);
+  assert.equal(matchingDetection.warning, undefined);
+
+  const cleanReport = formatModelsReport([
+    { id: "orchestrator", role: "orchestrator", cli: "claude", detected: matchingDetection }
+  ]);
+  assert.ok(cleanReport.includes("Doctor check: OK — All pane models verified from observable sources."));
+
+  // 4. detectActiveEnvironmentModel picks up KILO_MODEL
+  const customEnv = { KILO_MODEL: "river/deepseek-ai/DeepSeek-V4.1-Flash" };
+  const detectedEnv = detectActiveEnvironmentModel(customEnv);
+  assert.equal(detectedEnv, "river/deepseek-ai/DeepSeek-V4.1-Flash");
+});
+
+test("Grid layout rendering produces consistent, aligned ANSI output for 1, 3, and 6 workers", () => {
+  // Test 1 Worker
+  const dashboard1 = renderFullDashboard({
+    terminalWidth: 100,
+    terminalHeight: 30,
+    sessionName: "swarm-test-1",
+    orchestrator: { id: "orchestrator", cli: "claude", model: "sonnet", state: "idle", task: "Build MVP" },
+    workers: [
+      { id: "worker-1", cli: "kilocode", model: "river/deepseek", state: "idle" }
+    ],
+    focusedId: "worker-1"
+  });
+
+  const plain1 = stripAnsi(dashboard1);
+  assert.ok(plain1.includes("orchestrator · orchestrator"));
+  assert.ok(plain1.includes("worker-1"));
+  assert.equal(plain1.includes("worker-2"), false);
+  assert.ok(plain1.includes("[FOCUSED]")); // worker-1 is focused
+  assert.ok(plain1.includes("1 workers"));
+
+  // Test 3 Workers (single row of 3 columns)
+  const dashboard3 = renderFullDashboard({
+    terminalWidth: 120,
+    terminalHeight: 30,
+    sessionName: "swarm-test-3",
+    orchestrator: { id: "orchestrator", cli: "claude", model: "sonnet", state: "working", task: "Coordinate swarm" },
+    workers: [
+      { id: "worker-1", cli: "kilocode", model: "river/deepseek", state: "working", lastLine: "Parsing AST" },
+      { id: "worker-2", cli: "kilocode", model: "river/qwen", state: "idle", lastLine: "Ready" },
+      { id: "worker-3", cli: "kilocode", model: "river/nemotron", state: "done", lastLine: "Tests pass" }
+    ],
+    focusedId: "orchestrator"
+  });
+
+  const plain3 = stripAnsi(dashboard3);
+  assert.ok(plain3.includes("worker-1"));
+  assert.ok(plain3.includes("worker-2"));
+  assert.ok(plain3.includes("worker-3"));
+  assert.equal(plain3.includes("worker-4"), false);
+  assert.ok(plain3.includes("3 workers (1 working, 1 idle)"));
+
+  // Test 6 Workers (2x3 grid)
+  const dashboard6 = renderFullDashboard({
+    terminalWidth: 120,
+    terminalHeight: 40,
+    sessionName: "swarm-test-6",
+    orchestrator: { id: "orchestrator", cli: "claude", model: "sonnet", state: "idle" },
+    workers: [
+      { id: "worker-1", cli: "kilocode", model: "m-1", state: "working" },
+      { id: "worker-2", cli: "kilocode", model: "m-2", state: "idle" },
+      { id: "worker-3", cli: "kilocode", model: "m-3", state: "working" },
+      { id: "worker-4", cli: "kilocode", model: "m-4", state: "idle" },
+      { id: "worker-5", cli: "kilocode", model: "m-5", state: "idle" },
+      { id: "worker-6", cli: "kilocode", model: "m-6", state: "error" }
+    ],
+    focusedId: "worker-5"
+  });
+
+  const plain6 = stripAnsi(dashboard6);
+  for (let i = 1; i <= 6; i += 1) {
+    assert.ok(plain6.includes(`worker-${i}`), `Expected plain6 to contain worker-${i}`);
+  }
+  assert.ok(plain6.includes("6 workers (2 working, 3 idle, 1 error)"));
+
+  // Verify box width consistency across rows (no misaligned columns)
+  const boxRows = renderBox({
+    width: 34,
+    height: 6,
+    titleLeft: "worker-test",
+    titleRight: "model-test",
+    lines: ["line 1", "line 2"],
+    focused: true
+  });
+  for (const r of boxRows) {
+    assert.equal(stripAnsi(r).length, 34, `Row "${stripAnsi(r)}" is not 34 chars wide`);
+  }
+});
+
+test("Task pickup detection prioritizes CLI flag, persisted file, git context, and default standby", () => {
+  const tempDir = path.join(REPO_ROOT, ".test-task-pickup-space dir");
+  fs.mkdirSync(tempDir, { recursive: true });
+
+  try {
+    // 1. Explicit CLI flag takes highest priority
+    const resFlag = resolveInitialTask({
+      explicitTask: "refactor database connection pool",
+      baseDir: tempDir
+    });
+    assert.equal(resFlag.task, "refactor database connection pool");
+    assert.equal(resFlag.source, "cli_flag");
+
+    // 2. Persisted last-task.txt takes second priority
+    saveLastTask("fix memory leak in child streams", tempDir);
+    assert.ok(fs.existsSync(getLastTaskFilePath(tempDir)));
+    assert.equal(loadLastTask(tempDir), "fix memory leak in child streams");
+
+    const resFile = resolveInitialTask({ baseDir: tempDir });
+    assert.equal(resFile.task, "fix memory leak in child streams");
+    assert.equal(resFile.source, "last_task_file");
+
+    // Flag still overrides persisted file
+    const resFlagOverFile = resolveInitialTask({
+      explicitTask: "override flag task",
+      baseDir: tempDir
+    });
+    assert.equal(resFlagOverFile.task, "override flag task");
+    assert.equal(resFlagOverFile.source, "cli_flag");
+
+    // 3. Git context is picked up when no flag and no saved file
+    clearLastTask(tempDir);
+    assert.equal(loadLastTask(tempDir), null);
+
+    // In actual repo (git repo), resolveInitialTask picks up git context when no last-task.txt exists
+    const savedRepoLastTask = loadLastTask(REPO_ROOT);
+    clearLastTask(REPO_ROOT);
+    try {
+      const resGit = resolveInitialTask({ baseDir: REPO_ROOT });
+      assert.equal(resGit.source, "git_context");
+      assert.ok(resGit.task.startsWith("Resume uncommitted") || resGit.task.startsWith("Resume work following:"));
+    } finally {
+      if (savedRepoLastTask) {
+        saveLastTask(savedRepoLastTask, REPO_ROOT);
+      }
+    }
+
+    // 4. Persistence across sessions: saveLastTask writes, clearLastTask clears
+    saveLastTask("work on auth module", tempDir);
+    assert.equal(loadLastTask(tempDir), "work on auth module");
+    clearLastTask(tempDir);
+    assert.equal(loadLastTask(tempDir), null);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor accurately identifies configured models and detects launch flag mismatches against config", () => {
+  const tempDir = path.join(REPO_ROOT, ".test-doctor-models-dir");
+  fs.mkdirSync(tempDir, { recursive: true });
+
+  const testConfigPath = path.join(tempDir, "swarm.config.json");
+  const testConfig = {
+    default_cli: "custom",
+    orchestrator: {
+      cli: "claude",
+      model: "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    },
+    workers: [
+      {
+        cli: "kilocode",
+        model: "river/deepseek-ai/DeepSeek-V4.1-Flash"
+      },
+      {
+        cli: "kilocode",
+        model: "river/Qwen/Qwen3.8-27B-FP8"
+      }
+    ]
+  };
+
+  fs.writeFileSync(testConfigPath, JSON.stringify(testConfig, null, 2), "utf8");
+
+  try {
+    // 1. Without launch flag: all panes report source: "configured" and no mismatch
+    const linesNoFlag = [];
+    const resNoFlag = runDoctor({
+      configPath: testConfigPath,
+      models: true,
+      stdout: (msg) => linesNoFlag.push(msg)
+    });
+
+    assert.equal(resNoFlag.exitCode, 0);
+    const reportNoFlag = linesNoFlag.join("\n");
+    assert.ok(reportNoFlag.includes("anthropic.claude-3-5-sonnet-20241022-v2:0 [source: configured]"));
+    assert.ok(reportNoFlag.includes("river/deepseek-ai/DeepSeek-V4.1-Flash [source: configured]"));
+    assert.ok(reportNoFlag.includes("river/Qwen/Qwen3.8-27B-FP8 [source: configured]"));
+    assert.ok(reportNoFlag.includes("Doctor check: OK — All pane models verified from observable sources."));
+    assert.equal(reportNoFlag.includes("! WARNING:"), false);
+
+    // 2. With launch flag override: reports source: "launch_flag" and warns on mismatch
+    const linesWithFlag = [];
+    const resWithFlag = runDoctor({
+      configPath: testConfigPath,
+      model: "override-cli-model",
+      models: true,
+      stdout: (msg) => linesWithFlag.push(msg)
+    });
+
+    const reportWithFlag = linesWithFlag.join("\n");
+    assert.ok(reportWithFlag.includes("override-cli-model [source: launch_flag]"));
+    assert.ok(reportWithFlag.includes("! WARNING:"));
+    assert.ok(reportWithFlag.includes("Launch flag specifies \"override-cli-model\", but config specifies"));
+    assert.ok(reportWithFlag.includes("Doctor check: WARNING — One or more panes have model mismatches"));
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("Dashboard ANSI separator line and status bar dynamically adjust to terminal width without hardcoding", () => {
+  const orchestrator = { id: "orchestrator", cli: "claude", model: "sonnet", state: "idle" };
+  const workers = [{ id: "worker-1", cli: "kilocode", model: "river/deepseek", state: "idle" }];
+
+  for (const width of [60, 100, 140]) {
+    const dashboard = renderFullDashboard({
+      terminalWidth: width,
+      terminalHeight: 30,
+      sessionName: "swarm-width-test",
+      orchestrator,
+      workers,
+      focusedId: "orchestrator"
+    });
+
+    const plain = stripAnsi(dashboard);
+    const lines = plain.split("\n");
+
+    // Separator line above bottom status bar
+    const sepLine = lines[lines.length - 2];
+    assert.equal(sepLine.length, width - 4, `Expected separator line to be ${width - 4} chars wide at width ${width}, got ${sepLine.length}`);
+    assert.ok(/^─+$/.test(sepLine), `Expected separator line to consist entirely of box dashes at width ${width}`);
+
+    // Bottom status bar line
+    const barLine = lines[lines.length - 1];
+    assert.equal(barLine.length, width - 4, `Expected status bar line to be ${width - 4} chars wide at width ${width}, got ${barLine.length}`);
+    assert.ok(barLine.includes("swarm-width-test"));
+    if (width >= 90) {
+      assert.ok(barLine.includes("[Tab] Focus [Ctrl+Q] Exit"));
+    }
+  }
+});
+
+test("In-terminal TUI session lifecycle: spawn, IPC dispatch, live status query, task pickup, and clean stop", async () => {
+  const tempDir = path.join(REPO_ROOT, ".test-tui-session-dir");
+  fs.mkdirSync(tempDir, { recursive: true });
+
+  const inbox1 = path.join(tempDir, "inbox1.txt");
+  const inbox2 = path.join(tempDir, "inbox2.txt");
+
+  const testConfigPath = path.join(tempDir, "swarm.config.json");
+  const testConfig = {
+    default_cli: "custom",
+    orchestrator: {
+      cli: "custom",
+      command: process.execPath,
+      base_args: [STUB_CLI_PATH, "--pane-id", "orchestrator", "--hold", "10000"],
+      model: "orch-model"
+    },
+    workers: [
+      {
+        cli: "custom",
+        command: process.execPath,
+        base_args: [STUB_CLI_PATH, "--pane-id", "worker-1", "--inbox", inbox1, "--hold", "10000"],
+        model: "worker-1-model"
+      },
+      {
+        cli: "custom",
+        command: process.execPath,
+        base_args: [STUB_CLI_PATH, "--pane-id", "worker-2", "--inbox", inbox2, "--hold", "10000"],
+        model: "worker-2-model"
+      }
+    ]
+  };
+
+  fs.writeFileSync(testConfigPath, JSON.stringify(testConfig, null, 2), "utf8");
+
+  const session = new TuiSession({
+    configPath: testConfigPath,
+    baseDir: tempDir,
+    headless: true,
+    boost: true
+  });
+
+  try {
+    // 1. Start headless TUI session
+    await session.start();
+    assert.equal(session.running, true);
+    assert.equal(session.isBoost, true);
+    assert.equal(session.workingThresholdMs, 1500);
+
+    // Verify .swarm/panes.json was created
+    const panesMapPath = getPanesFilePath(tempDir);
+    assert.ok(fs.existsSync(panesMapPath), "Expected .swarm/panes.json to exist");
+
+    // 2. Query live session status via getSwarmStatus (which calls Named Pipe IPC)
+    const liveStatus = await getSwarmStatus({ baseDir: tempDir });
+    assert.equal(liveStatus.running, true);
+    assert.equal(liveStatus.workerCount, 2);
+    assert.equal(liveStatus.source, "ipc");
+    assert.ok(liveStatus.sessionName.includes("[BOOST]"));
+
+    // 3. Dispatch task to worker-1 via Named Pipe IPC
+    const dispatchRes1 = await dispatchTask({
+      target: "@worker-1",
+      task: "build-search-index",
+      baseDir: tempDir
+    });
+    assert.equal(dispatchRes1.ok, true);
+    assert.equal(dispatchRes1.delivered.length, 1);
+    assert.equal(dispatchRes1.delivered[0].worker, "worker-1");
+
+    // Verify task pickup file was saved
+    assert.equal(loadLastTask(tempDir), "build-search-index");
+
+    // 4. Dispatch task to all workers
+    const dispatchResAll = await dispatchTask({
+      target: "@all",
+      task: "sync-git-submodules",
+      baseDir: tempDir
+    });
+    assert.equal(dispatchResAll.ok, true);
+    assert.equal(dispatchResAll.delivered.length, 2);
+    assert.equal(loadLastTask(tempDir), "sync-git-submodules");
+
+    // 5. Dispatch task to worker list (@workers 1,2)
+    const dispatchResList = await dispatchTask({
+      target: "@workers 1,2",
+      task: "run-benchmarks",
+      baseDir: tempDir
+    });
+    assert.equal(dispatchResList.ok, true);
+    assert.equal(dispatchResList.delivered.length, 2);
+
+    // 6. Unknown target must be rejected with active workers error
+    await assert.rejects(
+      async () => {
+        await dispatchTask({
+          target: "@worker-99",
+          task: "invalid",
+          baseDir: tempDir
+        });
+      },
+      /Unknown target.*worker-99/
+    );
+
+    // 7. Verify stop command via IPC cleanly stops session and cleans panes.json
+    const stopIpcRes = await sendIpcMessage({ command: "stop" });
+    assert.equal(stopIpcRes.ok, true);
+    assert.equal(stopIpcRes.stopped, true);
+
+    // Give session a moment to finalize teardown
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(session.running, false);
+    assert.equal(fs.existsSync(panesMapPath), false, "Expected .swarm/panes.json to be cleaned on stop");
+  } finally {
+    await session.stop();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("CLI parsing supports --boost, /boost, and key=val syntax for all flags", () => {
+  const scriptPath = path.resolve(REPO_ROOT, "bin", "swarm.js");
+
+  // 1. Swarm help documents --boost, /boost
+  const helpRes = spawnSync(process.execPath, [scriptPath, "--help"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8"
+  });
+  assert.equal(helpRes.status, 0);
+  assert.ok(helpRes.stdout.includes("--boost, /boost"));
+
+  // 2. Swarm dry-run accepts --model=val, --task=val, --workers=val, and /boost
+  const dryRes = spawnSync(
+    process.execPath,
+    [
+      scriptPath,
+      "--dry-run",
+      "--model=test-flag-model",
+      "--task=test-flag-task",
+      "--workers=3",
+      "/boost"
+    ],
+    {
+      cwd: REPO_ROOT,
+      encoding: "utf8"
+    }
+  );
+  assert.equal(dryRes.status, 0, `Dry run exited with error: ${dryRes.stderr}`);
+  assert.ok(dryRes.stdout.includes("Swarm Engine Team — Dry Run"));
+  assert.ok(dryRes.stdout.includes("[worker-3]"));
+  assert.equal(dryRes.stdout.includes("[worker-4]"), false);
 });

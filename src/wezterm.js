@@ -156,7 +156,7 @@ export function cleanStaleWezTermSockets() {
  * @param {object} [options] - Additional spawn options.
  * @returns {Promise<{ stdout: string, stderr: string }>}
  */
-export function runWezTermCli(weztermPath, cliArgs, options = {}) {
+export async function runWezTermCli(weztermPath, cliArgs, options = {}, retries = 2) {
   cleanStaleWezTermSockets();
   const socketDir = getWezTermSocketDir();
   const execOptions = {
@@ -166,42 +166,59 @@ export function runWezTermCli(weztermPath, cliArgs, options = {}) {
     ...options
   };
 
-  return new Promise((resolve, reject) => {
-    const child = spawn(weztermPath, cliArgs, execOptions);
-    let stdout = "";
-    let stderr = "";
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await new Promise((resolve, reject) => {
+        const child = spawn(weztermPath, cliArgs, execOptions);
+        let stdout = "";
+        let stderr = "";
 
-    child.stdout.on("data", (d) => {
-      stdout += d.toString();
-    });
-    child.stderr.on("data", (d) => {
-      stderr += d.toString();
-    });
+        child.stdout.on("data", (d) => {
+          stdout += d.toString();
+        });
+        child.stderr.on("data", (d) => {
+          stderr += d.toString();
+        });
 
-    child.on("error", reject);
+        child.on("error", reject);
 
-    child.on("exit", (code) => {
-      // Destroy streams immediately to prevent Node's event loop from hanging on
-      // background processes (like wezterm-mux-server) that inherited stdout/stderr handles.
-      try {
-        child.stdout.destroy();
-        child.stderr.destroy();
-      } catch {
-        // Ignore
+        child.on("exit", (code) => {
+          // Destroy streams immediately to prevent Node's event loop from hanging on
+          // background processes (like wezterm-mux-server) that inherited stdout/stderr handles.
+          try {
+            child.stdout.destroy();
+            child.stderr.destroy();
+          } catch {
+            // Ignore
+          }
+
+          if (code === 0) {
+            resolve({ stdout, stderr, code });
+          } else {
+            const msg = stderr.trim() || stdout.trim() || `Exit code ${code}`;
+            const err = new Error(`WezTerm CLI command failed (${code}): ${msg}`);
+            err.code = code;
+            err.stdout = stdout;
+            err.stderr = stderr;
+            reject(err);
+          }
+        });
+      });
+    } catch (err) {
+      const isTransient =
+        err.stderr &&
+        (err.stderr.includes("10054") ||
+          err.stderr.includes("forcibly closed") ||
+          err.stderr.includes("broken pipe") ||
+          err.stderr.includes("decoding response pdu"));
+
+      if (isTransient && attempt < retries) {
+        await new Promise((r) => setTimeout(r, 400));
+        continue;
       }
-
-      if (code === 0) {
-        resolve({ stdout, stderr, code });
-      } else {
-        const msg = stderr.trim() || stdout.trim() || `Exit code ${code}`;
-        const err = new Error(`WezTerm CLI command failed (${code}): ${msg}`);
-        err.code = code;
-        err.stdout = stdout;
-        err.stderr = stderr;
-        reject(err);
-      }
-    });
-  });
+      throw err;
+    }
+  }
 }
 
 /**

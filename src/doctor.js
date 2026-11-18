@@ -7,6 +7,7 @@
 
 import { loadSwarmConfig, checkModelCompatibility } from "./config.js";
 import { buildAllLaunchCommands } from "./launch-builder.js";
+import { detectPaneModel, formatModelsReport, extractModelFromArgs } from "./model-detect.js";
 
 /**
  * Determine whether two pane configurations are meant to produce different commands.
@@ -224,9 +225,45 @@ export function runDoctor(options = {}) {
   const { configPath, panes } = loadSwarmConfig(options.configPath, {
     workerCount: options.workers,
     forcedCli: options.cli,
+    forcedModel: options.model,
+    activeModel: options.activeModel,
     onWarning: (w) => writeOut(w)
   });
   const launches = buildAllLaunchCommands(panes);
+
+  // If `swarm doctor --models` is requested
+  if (options.models) {
+    const detectedPanes = launches.map((launch, idx) => {
+      const paneConfig = panes[idx];
+      const explicitFlagInArgs =
+        extractModelFromArgs(paneConfig.base_args) ?? extractModelFromArgs(paneConfig.args);
+      const effectiveLaunchFlag = paneConfig.launch_model ?? explicitFlagInArgs ?? null;
+      const originalConfigModel = paneConfig.config_model ?? null;
+
+      const detected = detectPaneModel({
+        cli: launch.cli,
+        args: launch.args,
+        configModel: originalConfigModel,
+        launchFlag: effectiveLaunchFlag,
+        hasLaunchFlag: Boolean(effectiveLaunchFlag)
+      });
+      return {
+        id: launch.id,
+        role: launch.role,
+        cli: launch.cli,
+        detected
+      };
+    });
+
+    const modelsReport = formatModelsReport(detectedPanes);
+    writeOut(modelsReport);
+    return {
+      exitCode: 0,
+      report: modelsReport,
+      detectedPanes
+    };
+  }
+
   const validation = validatePaneLaunches(panes, launches);
   const report = formatDoctorReport({ configPath, launches, validation });
 
