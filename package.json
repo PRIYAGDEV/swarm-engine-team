@@ -11,7 +11,8 @@
     "doctor": "node ./bin/swarm.js doctor",
     "dry-run": "node ./bin/swarm.js --dry-run",
     "start": "node ./bin/swarm.js",
-    "stop": "node ./bin/swarm.js stop"
+    "stop": "node ./bin/swarm.js stop",
+    "status": "node ./bin/swarm.js status"
   },
   "engines": {
     "node": ">=20.0.0"

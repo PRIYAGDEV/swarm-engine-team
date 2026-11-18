@@ -241,3 +241,72 @@ export async function killWezTermPane(weztermPath, paneId) {
     return false;
   }
 }
+
+/**
+ * Retrieve the current textual content of a WezTerm pane via `wezterm cli get-text`.
+ *
+ * @param {string} weztermPath
+ * @param {number|string} paneId
+ * @returns {Promise<string|null>}
+ */
+export async function getWezTermPaneText(weztermPath, paneId) {
+  try {
+    const { stdout } = await runWezTermCli(weztermPath, [
+      "cli",
+      "get-text",
+      "--pane-id",
+      String(paneId)
+    ]);
+    return stdout;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Set the tab title for a given pane via `wezterm cli set-tab-title`.
+ *
+ * @param {string} weztermPath
+ * @param {number|string} paneId
+ * @param {string} title
+ * @returns {Promise<boolean>}
+ */
+export async function setWezTermTabTitle(weztermPath, paneId, title) {
+  try {
+    await runWezTermCli(weztermPath, [
+      "cli",
+      "set-tab-title",
+      "--pane-id",
+      String(paneId),
+      "--",
+      title
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Set the window title for a given pane via `wezterm cli set-window-title`.
+ *
+ * @param {string} weztermPath
+ * @param {number|string} paneId
+ * @param {string} title
+ * @returns {Promise<boolean>}
+ */
+export async function setWezTermWindowTitle(weztermPath, paneId, title) {
+  try {
+    await runWezTermCli(weztermPath, [
+      "cli",
+      "set-window-title",
+      "--pane-id",
+      String(paneId),
+      "--",
+      title
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+}

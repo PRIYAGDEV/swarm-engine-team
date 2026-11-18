@@ -213,7 +213,11 @@ export function runDoctor(options = {}) {
   const writeOut = options.stdout ?? ((msg) => console.log(msg));
   const writeErr = options.stderr ?? ((msg) => console.error(msg));
 
-  const { configPath, panes } = loadSwarmConfig(options.configPath);
+  const { configPath, panes } = loadSwarmConfig(options.configPath, {
+    workerCount: options.workers,
+    forcedCli: options.cli,
+    onWarning: (w) => writeOut(w)
+  });
   const launches = buildAllLaunchCommands(panes);
   const validation = validatePaneLaunches(panes, launches);
   const report = formatDoctorReport({ configPath, launches, validation });

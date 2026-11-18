@@ -15,6 +15,7 @@ import { runDoctor } from "../src/doctor.js";
 import { runDryRun } from "../src/dry-run.js";
 import { startSwarmLayout, stopSwarmLayout } from "../src/layout.js";
 import { dispatchTask, parseDispatchLine } from "../src/dispatch.js";
+import { getSwarmStatus, printSwarmStatus } from "../src/status.js";
 
 function printHelp() {
   console.log(
@@ -22,12 +23,18 @@ function printHelp() {
       "Swarm Engine Team",
       "",
       "Usage:",
-      "  swarm [--config <path>]            Open full-width orchestrator + 2x3 worker grid in WezTerm",
+      "  swarm [--config <path>] [--workers N] [--cli <name>]",
+      "                                     Open orchestrator + worker grid in WezTerm",
+      "  swarm status                       Inspect current session status and per-worker states",
       "  swarm send <target> \"<task>\"       Dispatch task to worker(s) (e.g. @worker-3, @all, @workers 1,2)",
       "  swarm stop                         Close all active panes and leave no leftover processes",
       "  swarm doctor [--config <path>]     Inspect per-pane CLI, command, model flag/env, cwd",
       "  swarm --dry-run [--config <path>]  Print all pane launch commands without opening anything",
-      "  swarm --help                       Show this help message"
+      "  swarm --help                       Show this help message",
+      "",
+      "Flags:",
+      "  --workers <N>, -w <N>              Override worker pane count (1-6)",
+      "  --cli <name>                       Force all panes to use the specified CLI (e.g. kilocode, agy)"
     ].join("\n")
   );
 }
@@ -41,14 +48,20 @@ function parseArgs(argv) {
   let configPath = path.resolve(process.cwd(), "swarm.config.json");
   let target = null;
   let task = null;
+  let workerCount = null;
+  let forcedCli = null;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "-h" || arg === "--help") {
-      return { command: "help", configPath };
+      return { command: "help", configPath, workerCount, forcedCli };
     }
     if (arg === "start") {
       command = "start";
+      continue;
+    }
+    if (arg === "status") {
+      command = "status";
       continue;
     }
     if (arg === "stop") {
@@ -61,6 +74,28 @@ function parseArgs(argv) {
     }
     if (arg === "--dry-run") {
       command = "dry-run";
+      continue;
+    }
+    if (arg === "--workers" || arg === "-w") {
+      const next = argv[i + 1];
+      if (!next) {
+        throw new Error(`Flag "${arg}" requires a number between 1 and 6.`);
+      }
+      const parsed = parseInt(next, 10);
+      if (isNaN(parsed) || parsed < 1 || parsed > 6) {
+        throw new Error(`Invalid worker count: "${next}". Must be an integer between 1 and 6.`);
+      }
+      workerCount = parsed;
+      i += 1;
+      continue;
+    }
+    if (arg === "--cli") {
+      const next = argv[i + 1];
+      if (!next) {
+        throw new Error(`Flag "${arg}" requires a CLI name.`);
+      }
+      forcedCli = next.trim();
+      i += 1;
       continue;
     }
     if (arg === "send") {
@@ -102,12 +137,14 @@ function parseArgs(argv) {
     throw new Error(`Unknown argument "${arg}". Run \`swarm --help\` for usage.`);
   }
 
-  return { command, configPath, target, task };
+  return { command, configPath, target, task, workerCount, forcedCli };
 }
 
 async function main() {
   try {
-    const { command, configPath, target, task } = parseArgs(process.argv.slice(2));
+    const { command, configPath, target, task, workerCount, forcedCli } = parseArgs(
+      process.argv.slice(2)
+    );
 
     if (command === "help") {
       printHelp();
@@ -115,14 +152,21 @@ async function main() {
       return;
     }
 
+    if (command === "status") {
+      const statusResult = await getSwarmStatus();
+      printSwarmStatus(statusResult);
+      process.exitCode = 0;
+      return;
+    }
+
     if (command === "doctor") {
-      const result = runDoctor({ configPath });
+      const result = runDoctor({ configPath, workers: workerCount, cli: forcedCli });
       process.exitCode = result.exitCode;
       return;
     }
 
     if (command === "dry-run") {
-      const result = runDryRun({ configPath });
+      const result = runDryRun({ configPath, workers: workerCount, cli: forcedCli });
       process.exitCode = result.exitCode;
       return;
     }
@@ -140,7 +184,7 @@ async function main() {
     }
 
     if (command === "start") {
-      await startSwarmLayout({ configPath });
+      await startSwarmLayout({ configPath, workers: workerCount, cli: forcedCli });
       process.exitCode = 0;
     }
   } catch (err) {

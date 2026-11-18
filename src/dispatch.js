@@ -19,6 +19,7 @@
 
 import { findWezTerm, runWezTermCli, getWezTermNotFoundMessage } from "./wezterm.js";
 import { loadPanesMap } from "./state.js";
+import { recordTaskDispatched, getSwarmStatus } from "./status.js";
 
 /**
  * Parse a raw input line using the @target syntax into target and task components.
@@ -255,6 +256,7 @@ export async function dispatchTask(options) {
     }
 
     await sendTextToPane(weztermPath, paneId, options.task);
+    recordTaskDispatched(workerName, options.task, baseDir);
     delivered.push({
       worker: workerName,
       paneId,
@@ -262,6 +264,9 @@ export async function dispatchTask(options) {
     });
     log(`[dispatch] Sent task to ${workerName} (pane ${paneId}): "${options.task.replace(/\r?\n/g, "\\n")}"`);
   }
+
+  // Refresh WezTerm status bar with the newly working workers
+  await getSwarmStatus({ baseDir, weztermPath }).catch(() => {});
 
   return {
     ok: true,

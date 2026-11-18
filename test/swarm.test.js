@@ -24,6 +24,8 @@ import { startSwarmLayout, stopSwarmLayout, formatPaneTitle } from "../src/layou
 import { findWezTerm, listWezTermPanes } from "../src/wezterm.js";
 import { dispatchTask, parseDispatchLine, resolveTargetWorkers } from "../src/dispatch.js";
 import { loadPanesMap, getPanesFilePath } from "../src/state.js";
+import { getSwarmStatus, formatStatusBar, evaluateWorkerState } from "../src/status.js";
+import { checkModelCompatibility } from "../src/config.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -566,6 +568,228 @@ test("Stage 3: automated task dispatch delivers to worker-3 only, then broadcast
   } finally {
     for (const f of [tempConfigPath, inbox1, inbox2, inbox3]) {
       if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
+  }
+});
+
+test("Stage 4: flags --workers N (1-6) and --cli <name> with model compatibility warnings", () => {
+  const baseConfig = {
+    default_cli: "kilocode",
+    orchestrator: { cli: "claude", model: "sonnet" },
+    workers: [
+      { cli: "kilocode", model: "river/deepseek-ai/DeepSeek-V4.1-Flash" },
+      { cli: "kilocode", model: "river/Qwen/Qwen3.8-27B-FP8" },
+      { cli: "kilocode", model: "river/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4" }
+    ]
+  };
+
+  // 1. Test --workers N shrinks and expands worker count correctly
+  const panesW1 = normalizePaneConfigs(baseConfig, REPO_ROOT, { workerCount: 1 });
+  assert.equal(panesW1.filter((p) => p.role === "worker").length, 1);
+
+  const panesW5 = normalizePaneConfigs(baseConfig, REPO_ROOT, { workerCount: 5 });
+  assert.equal(panesW5.filter((p) => p.role === "worker").length, 5);
+
+  const panesW6 = normalizePaneConfigs(baseConfig, REPO_ROOT, { workerCount: 6 });
+  assert.equal(panesW6.filter((p) => p.role === "worker").length, 6);
+
+  // Invalid worker count must reject
+  assert.throws(
+    () => normalizePaneConfigs(baseConfig, REPO_ROOT, { workerCount: 0 }),
+    /Invalid worker count: "0"/
+  );
+  assert.throws(
+    () => normalizePaneConfigs(baseConfig, REPO_ROOT, { workerCount: 7 }),
+    /Invalid worker count: "7"/
+  );
+
+  // 2. Test --cli <name> forces CLI on all panes while preserving config models
+  const warnings = [];
+  const panesClaude = normalizePaneConfigs(baseConfig, REPO_ROOT, {
+    forcedCli: "claude",
+    onWarning: (msg) => warnings.push(msg)
+  });
+
+  for (const pane of panesClaude) {
+    assert.equal(pane.cli, "claude", `Expected pane ${pane.id} to use forced cli "claude"`);
+  }
+
+  // Orchestrator model is "sonnet" (compatible with Claude, no warning)
+  // Workers have "river/..." models which do NOT fit Claude -> must trigger warnings
+  assert.ok(warnings.length >= 3);
+  assert.ok(warnings[0].includes("may not be compatible with forced CLI \"claude\""));
+
+  // Verify models were preserved from config and NOT silently defaulted
+  assert.equal(panesClaude.find((p) => p.id === "orchestrator").model, "sonnet");
+  assert.equal(
+    panesClaude.find((p) => p.id === "worker-1").model,
+    "river/deepseek-ai/DeepSeek-V4.1-Flash"
+  );
+});
+
+test("Stage 4: state detection evaluates idle / working / done / error states accurately", () => {
+  const now = 10000000;
+  const stabilitySec = 3;
+
+  // 1. Initial state (alive, no task sent yet) -> "idle"
+  const sIdle = evaluateWorkerState({
+    isAlive: true,
+    currentText: "Ready for input\n",
+    previousRecord: { lastTaskSentAt: null },
+    stabilitySec,
+    now
+  });
+  assert.equal(sIdle.state, "idle");
+
+  // 2. Task just sent -> "working"
+  const sWorking = evaluateWorkerState({
+    isAlive: true,
+    currentText: "Processing query...\n",
+    previousRecord: {
+      lastTaskSentAt: now - 1000, // 1s ago (< 3s stabilitySec)
+      lastOutputHash: "hash-initial",
+      lastOutputChangedAt: now - 1000
+    },
+    stabilitySec,
+    now
+  });
+  assert.equal(sWorking.state, "working");
+
+  // 3. Output actively changed -> "working"
+  const sWorkingChanged = evaluateWorkerState({
+    isAlive: true,
+    currentText: "Processing query... 50% complete\n",
+    previousRecord: {
+      lastTaskSentAt: now - 5000,
+      lastOutputHash: "hash-previous-diff",
+      lastOutputChangedAt: now - 5000
+    },
+    stabilitySec,
+    now
+  });
+  assert.equal(sWorkingChanged.state, "working");
+
+  // 4. Output stabilized for >= 3s after task delivery -> "done"
+  const sDone = evaluateWorkerState({
+    isAlive: true,
+    currentText: "Processing query... complete.\n",
+    previousRecord: {
+      lastTaskSentAt: now - 6000,
+      lastOutputHash: "hash-complete",
+      lastOutputChangedAt: now - 4000 // 4s ago (> 3s stabilitySec)
+    },
+    stabilitySec,
+    now
+  });
+  // When currentText hashes to "hash-complete" (same hash), output has settled
+  const hashComplete = sDone.record.lastOutputHash;
+  const sDoneSettled = evaluateWorkerState({
+    isAlive: true,
+    currentText: "Processing query... complete.\n",
+    previousRecord: {
+      lastTaskSentAt: now - 6000,
+      lastOutputHash: hashComplete,
+      lastOutputChangedAt: now - 4000
+    },
+    stabilitySec,
+    now
+  });
+  assert.equal(sDoneSettled.state, "done");
+
+  // 5. Dead process -> "error"
+  const sDead = evaluateWorkerState({
+    isAlive: false,
+    currentText: null,
+    previousRecord: { lastTaskSentAt: now - 1000 },
+    stabilitySec,
+    now
+  });
+  assert.equal(sDead.state, "error");
+
+  // Status bar format check
+  const statusBarText = formatStatusBar({
+    running: true,
+    sessionName: "swarm-engine-team",
+    workerCount: 3,
+    workers: [
+      { id: "worker-1", state: "idle" },
+      { id: "worker-2", state: "working" },
+      { id: "worker-3", state: "done" }
+    ]
+  });
+  assert.equal(
+    statusBarText,
+    "swarm-engine-team · 3 workers · worker-1: idle · worker-2: working · worker-3: done"
+  );
+});
+
+test("Stage 4: swarm status reports live worker states during session and not running when idle", async (t) => {
+  const weztermPath = findWezTerm();
+  if (!weztermPath) {
+    t.skip("WezTerm is not installed on this system; skipping status test.");
+    return;
+  }
+
+  // Before starting, status must report not running
+  const statusBefore = await getSwarmStatus({ baseDir: REPO_ROOT });
+  assert.equal(statusBefore.running, false);
+  assert.equal(statusBefore.message, "not running");
+
+  const tempConfigPath = path.join(REPO_ROOT, ".swarm.test.status.config.json");
+  const testConfig = {
+    default_cli: "custom",
+    orchestrator: {
+      cli: "custom",
+      command: process.execPath,
+      base_args: [STUB_CLI_PATH, "--pane-id", "orchestrator", "--hold", "15000"],
+      model_flag: "--model",
+      model: "orch-status-model"
+    },
+    workers: [
+      {
+        cli: "custom",
+        command: process.execPath,
+        base_args: [STUB_CLI_PATH, "--pane-id", "worker-1", "--hold", "15000"],
+        model_flag: "--model",
+        model: "worker-1-model"
+      },
+      {
+        cli: "custom",
+        command: process.execPath,
+        base_args: [STUB_CLI_PATH, "--pane-id", "worker-2", "--hold", "15000"],
+        model_flag: "--model",
+        model: "worker-2-model"
+      }
+    ]
+  };
+
+  fs.writeFileSync(tempConfigPath, JSON.stringify(testConfig, null, 2), "utf8");
+
+  try {
+    const startResult = await startSwarmLayout({ configPath: tempConfigPath });
+    assert.equal(startResult.ok, true);
+
+    await new Promise((r) => setTimeout(r, 800));
+
+    // Live status check: both workers should be idle
+    const statusLive = await getSwarmStatus({ baseDir: REPO_ROOT, weztermPath });
+    assert.equal(statusLive.running, true);
+    assert.equal(statusLive.sessionName, "swarm-engine-team");
+    assert.equal(statusLive.workerCount, 2);
+    assert.equal(statusLive.workers[0].state, "idle");
+    assert.equal(statusLive.workers[1].state, "idle");
+
+    // Clean up
+    const stopResult = await stopSwarmLayout({ log: () => {} });
+    assert.equal(stopResult.ok, true);
+
+    // Status after shutdown must report not running
+    const statusAfter = await getSwarmStatus({ baseDir: REPO_ROOT });
+    assert.equal(statusAfter.running, false);
+    assert.equal(statusAfter.message, "not running");
+  } finally {
+    if (fs.existsSync(tempConfigPath)) {
+      fs.unlinkSync(tempConfigPath);
     }
   }
 });

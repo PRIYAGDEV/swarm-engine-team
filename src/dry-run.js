@@ -39,7 +39,11 @@ export function formatDryRunOutput({ configPath, launches }) {
  */
 export function runDryRun(options = {}) {
   const writeOut = options.stdout ?? ((msg) => console.log(msg));
-  const { configPath, panes } = loadSwarmConfig(options.configPath);
+  const { configPath, panes } = loadSwarmConfig(options.configPath, {
+    workerCount: options.workers,
+    forcedCli: options.cli,
+    onWarning: (w) => writeOut(w)
+  });
   const launches = buildAllLaunchCommands(panes);
   const output = formatDryRunOutput({ configPath, launches });
 

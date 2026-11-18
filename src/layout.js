@@ -34,6 +34,7 @@ import {
   savePanesMap,
   clearPanesMap
 } from "./state.js";
+import { clearStatusState, getSwarmStatus } from "./status.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -124,7 +125,11 @@ export async function startSwarmLayout(options = {}) {
     throw new Error(errorMsg);
   }
 
-  const { configPath, panes: paneConfigs } = loadSwarmConfig(options.configPath);
+  const { configPath, panes: paneConfigs } = loadSwarmConfig(options.configPath, {
+    workerCount: options.workers,
+    forcedCli: options.cli,
+    onWarning: log
+  });
   const launches = buildAllLaunchCommands(paneConfigs);
 
   const orchLaunch = launches.find((l) => l.role === "orchestrator") ?? launches[0];
@@ -447,6 +452,9 @@ export async function startSwarmLayout(options = {}) {
   }
   savePanesMap(panesMap);
 
+  // Initialize status bar across WezTerm window / tab areas
+  await getSwarmStatus({ weztermPath }).catch(() => {});
+
   log(`Layout opened successfully in WezTerm (${createdPanes.length} total panes):`);
   for (const pane of createdPanes) {
     log(`  [pane ${pane.paneId}] ${pane.title}`);
@@ -521,9 +529,10 @@ export async function stopSwarmLayout(options = {}) {
     }
   }
 
-  // Clean up session state file and .swarm/panes.json
+  // Clean up session state file, .swarm/panes.json, and .swarm/status.json
   clearSessionState();
   clearPanesMap();
+  clearStatusState();
 
   const closedCount = killedPaneIds.size;
   log(`Swarm stopped cleanly. Closed ${closedCount} pane(s); no leftover processes.`);
