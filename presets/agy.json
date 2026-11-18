@@ -1,0 +1,40 @@
+{
+  "name": "agy",
+  "display_name": "Antigravity CLI",
+  "command": "agy",
+  "aliases": ["antigravity"],
+  "verified": true,
+  "verification": {
+    "installed_locally": true,
+    "installed_version": "1.5.9",
+    "verified_via": [
+      "agy --help",
+      "agy models",
+      "agy --version"
+    ],
+    "verified_at": "2026-11-18",
+    "notes": "Verified against locally installed agy.EXE 1.5.9 at C:\\Users\\ADMIN\\AppData\\Local\\agy\\bin\\agy.EXE. Model passed via --model <id>. Non-interactive mode via --print / -p."
+  },
+  "model_passing": {
+    "method": "flag",
+    "flag": "--model",
+    "short_flag": null,
+    "format": "model_id",
+    "requires_subcommand": null,
+    "env_var": "AGY_MODEL",
+    "config_file": null
+  },
+  "non_interactive": {
+    "type": "flag",
+    "subcommand": null,
+    "flag": "--print",
+    "short_flag": "-p",
+    "prompt_mode": "positional",
+    "auto_approve_flag": "--dangerously-skip-permissions",
+    "notes": "Verified via `agy --help`: `-p, --print` runs a single prompt non-interactively; `--dangerously-skip-permissions` auto-approves tool permission requests."
+  },
+  "env_strip": [
+    "AGY_MODEL",
+    "ANTIGRAVITY_MODEL"
+  ]
+}

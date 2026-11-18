@@ -31,7 +31,9 @@ export const GLOBAL_MODEL_ENV_VARS = Object.freeze([
   "MODEL",
   "DEFAULT_MODEL",
   "AI_MODEL",
-  "SWARM_MODEL"
+  "SWARM_MODEL",
+  "AGY_MODEL",
+  "ANTIGRAVITY_MODEL"
 ]);
 
 /**

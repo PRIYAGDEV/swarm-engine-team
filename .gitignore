@@ -7,4 +7,6 @@ swarm.config.json
 # Environment and logs
 .env
 *.log
+# Session state and runtime mapping
 .swarm-state.json
+.swarm/

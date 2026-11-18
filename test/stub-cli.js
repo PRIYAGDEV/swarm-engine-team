@@ -6,6 +6,8 @@
  * a deterministic JSON + human-readable line to stdout.
  */
 
+import fs from "node:fs";
+
 const LEAK_CHECK_VARS = [
   "ANTHROPIC_MODEL",
   "CLAUDE_MODEL",
@@ -24,6 +26,7 @@ function parseStubArgs(argv) {
   let paneId = "unknown";
   let modelFromFlag = null;
   let holdMs = 0;
+  let inboxFile = null;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -35,6 +38,9 @@ function parseStubArgs(argv) {
       i += 1;
     } else if (arg.startsWith("--model=")) {
       modelFromFlag = arg.slice("--model=".length);
+    } else if (arg === "--inbox" && argv[i + 1]) {
+      inboxFile = argv[i + 1];
+      i += 1;
     } else if (arg === "--hold") {
       holdMs = argv[i + 1] && !argv[i + 1].startsWith("-") ? parseInt(argv[i + 1], 10) : 30000;
       if (argv[i + 1] && !argv[i + 1].startsWith("-")) {
@@ -43,10 +49,10 @@ function parseStubArgs(argv) {
     }
   }
 
-  return { paneId, modelFromFlag, holdMs };
+  return { paneId, modelFromFlag, holdMs, inboxFile };
 }
 
-const { paneId, modelFromFlag, holdMs } = parseStubArgs(process.argv.slice(2));
+const { paneId, modelFromFlag, holdMs, inboxFile } = parseStubArgs(process.argv.slice(2));
 const model = modelFromFlag ?? process.env.STUB_MODEL ?? null;
 
 const leakedVars = LEAK_CHECK_VARS.filter((name) => process.env[name] !== undefined);
@@ -60,6 +66,17 @@ const payload = {
 // Print both a clear human-readable line and structured JSON payload.
 console.log(`pane=${paneId} model=${model ?? "NONE"} leaked=${leakedVars.length}`);
 console.log(JSON.stringify(payload));
+
+if (inboxFile) {
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    try {
+      fs.appendFileSync(inboxFile, chunk, "utf8");
+    } catch {
+      // Ignore write errors
+    }
+  });
+}
 
 if (holdMs > 0) {
   setTimeout(() => {}, holdMs);

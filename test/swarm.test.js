@@ -22,6 +22,8 @@ import { runDoctor, validatePaneLaunches } from "../src/doctor.js";
 import { runDryRun } from "../src/dry-run.js";
 import { startSwarmLayout, stopSwarmLayout, formatPaneTitle } from "../src/layout.js";
 import { findWezTerm, listWezTermPanes } from "../src/wezterm.js";
+import { dispatchTask, parseDispatchLine, resolveTargetWorkers } from "../src/dispatch.js";
+import { loadPanesMap, getPanesFilePath } from "../src/state.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -197,11 +199,12 @@ test("buildLaunchCommand isolates per-pane state and strips all parent model env
   }
 });
 
-test("presets directory contains all 6 CLIs with accurate local verification markers", () => {
+test("presets directory contains supported CLIs including agy with accurate local verification markers", () => {
   const names = listPresetNames();
-  assert.deepEqual(names, ["aider", "claude", "codex", "gemini", "kilocode", "opencode"]);
+  assert.deepEqual(names, ["agy", "aider", "claude", "codex", "gemini", "kilocode", "opencode"]);
 
   const expectedVerified = {
+    agy: true,
     kilocode: true,
     claude: true,
     opencode: true,
@@ -360,6 +363,209 @@ test("Stage 2: WezTerm layout opens with stub CLI, shows distinct models per pan
   } finally {
     if (fs.existsSync(tempConfigPath)) {
       fs.unlinkSync(tempConfigPath);
+    }
+  }
+});
+
+test("Stage 3: dispatch parser resolves @worker, @all, @workers 1,2,5 syntax and rejects unknown targets", () => {
+  // Syntax parser tests
+  const line1 = parseDispatchLine("@worker-3 optimize query");
+  assert.deepEqual(line1, { target: "@worker-3", task: "optimize query" });
+
+  const line2 = parseDispatchLine("@all git pull origin main");
+  assert.deepEqual(line2, { target: "@all", task: "git pull origin main" });
+
+  const line3 = parseDispatchLine("@workers 1, 2, 5 run integration tests");
+  assert.deepEqual(line3, { target: "@workers 1,2,5", task: "run integration tests" });
+
+  assert.equal(parseDispatchLine("no-at-sign here"), null);
+  assert.equal(parseDispatchLine(""), null);
+
+  // Target resolution tests against an active worker panesMap
+  const panesMap = {
+    orchestrator: 1,
+    "worker-1": 2,
+    "worker-2": 3,
+    "worker-3": 4
+  };
+
+  assert.deepEqual(resolveTargetWorkers("@worker-3", panesMap), ["worker-3"]);
+  assert.deepEqual(resolveTargetWorkers("worker-3", panesMap), ["worker-3"]);
+  assert.deepEqual(resolveTargetWorkers("3", panesMap), ["worker-3"]);
+  assert.deepEqual(resolveTargetWorkers("@all", panesMap), ["worker-1", "worker-2", "worker-3"]);
+  assert.deepEqual(resolveTargetWorkers("@workers 1,3", panesMap), ["worker-1", "worker-3"]);
+  assert.deepEqual(resolveTargetWorkers("1,2", panesMap), ["worker-1", "worker-2"]);
+
+  // Reject unknown worker targets loudly
+  assert.throws(
+    () => resolveTargetWorkers("@worker-9", panesMap),
+    /Unknown target: "@worker-9"/
+  );
+  assert.throws(
+    () => resolveTargetWorkers("@workers 1,9", panesMap),
+    /Unknown target: "worker-9"/
+  );
+  assert.throws(
+    () => resolveTargetWorkers("unknown-bot", panesMap),
+    /Unknown target: "unknown-bot"/
+  );
+});
+
+test("Stage 3: automated task dispatch delivers to worker-3 only, then broadcasts to @all, and cleans panes.json", async (t) => {
+  const weztermPath = findWezTerm();
+  if (!weztermPath) {
+    t.skip("WezTerm is not installed on this system; skipping dispatch test.");
+    return;
+  }
+
+  const tempConfigPath = path.join(REPO_ROOT, ".swarm.test.dispatch.config.json");
+  const inbox1 = path.join(REPO_ROOT, ".test-inbox-worker-1.log");
+  const inbox2 = path.join(REPO_ROOT, ".test-inbox-worker-2.log");
+  const inbox3 = path.join(REPO_ROOT, ".test-inbox-worker-3.log");
+
+  for (const f of [inbox1, inbox2, inbox3]) {
+    if (fs.existsSync(f)) fs.unlinkSync(f);
+  }
+
+  const testConfig = {
+    default_cli: "custom",
+    orchestrator: {
+      cli: "custom",
+      command: process.execPath,
+      base_args: [STUB_CLI_PATH, "--pane-id", "orchestrator", "--hold", "20000"],
+      model_flag: "--model",
+      model: "orch-model"
+    },
+    workers: [
+      {
+        cli: "custom",
+        command: process.execPath,
+        base_args: [STUB_CLI_PATH, "--pane-id", "worker-1", "--inbox", inbox1, "--hold", "20000"],
+        model_flag: "--model",
+        model: "worker-1-model"
+      },
+      {
+        cli: "custom",
+        command: process.execPath,
+        base_args: [STUB_CLI_PATH, "--pane-id", "worker-2", "--inbox", inbox2, "--hold", "20000"],
+        model_flag: "--model",
+        model: "worker-2-model"
+      },
+      {
+        cli: "custom",
+        command: process.execPath,
+        base_args: [STUB_CLI_PATH, "--pane-id", "worker-3", "--inbox", inbox3, "--hold", "20000"],
+        model_flag: "--model",
+        model: "worker-3-model"
+      }
+    ]
+  };
+
+  fs.writeFileSync(tempConfigPath, JSON.stringify(testConfig, null, 2), "utf8");
+
+  try {
+    // 1. Start layout
+    const startResult = await startSwarmLayout({ configPath: tempConfigPath });
+    assert.equal(startResult.ok, true);
+
+    // 2. Verify .swarm/panes.json was created and contains valid mappings
+    const panesMapPath = getPanesFilePath(REPO_ROOT);
+    assert.ok(fs.existsSync(panesMapPath), "Expected .swarm/panes.json to exist after layout launch");
+    const panesMap = loadPanesMap(REPO_ROOT);
+    assert.ok(panesMap["orchestrator"] !== undefined);
+    assert.ok(panesMap["worker-1"] !== undefined);
+    assert.ok(panesMap["worker-2"] !== undefined);
+    assert.ok(panesMap["worker-3"] !== undefined);
+
+    // Allow terminal panes to initialize and start stdin listeners
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    // 3. Dispatch task to worker-3 ONLY
+    const taskWorker3 = "run-database-migration-step-4";
+    const resW3 = await dispatchTask({
+      target: "@worker-3",
+      task: taskWorker3,
+      baseDir: REPO_ROOT,
+      weztermPath
+    });
+    assert.equal(resW3.ok, true);
+    assert.equal(resW3.delivered.length, 1);
+    assert.equal(resW3.delivered[0].worker, "worker-3");
+
+    // Allow WezTerm IPC to deliver keystrokes to target pane
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    const content1Before = fs.existsSync(inbox1) ? fs.readFileSync(inbox1, "utf8") : "";
+    const content2Before = fs.existsSync(inbox2) ? fs.readFileSync(inbox2, "utf8") : "";
+    const content3Before = fs.existsSync(inbox3) ? fs.readFileSync(inbox3, "utf8") : "";
+
+    // PROVE: ONLY worker-3 received the task
+    assert.equal(content1Before, "", "Worker 1 should NOT have received worker-3's task");
+    assert.equal(content2Before, "", "Worker 2 should NOT have received worker-3's task");
+    assert.ok(
+      content3Before.includes(taskWorker3),
+      `Worker 3 should have received "${taskWorker3}", got: "${content3Before}"`
+    );
+
+    // 4. Dispatch task to @all
+    const taskAll = "broadcast-check-git-status";
+    const resAll = await dispatchTask({
+      target: "@all",
+      task: taskAll,
+      baseDir: REPO_ROOT,
+      weztermPath
+    });
+    assert.equal(resAll.ok, true);
+    assert.equal(resAll.delivered.length, 3);
+
+    // Allow delivery
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    const content1After = fs.existsSync(inbox1) ? fs.readFileSync(inbox1, "utf8") : "";
+    const content2After = fs.existsSync(inbox2) ? fs.readFileSync(inbox2, "utf8") : "";
+    const content3After = fs.existsSync(inbox3) ? fs.readFileSync(inbox3, "utf8") : "";
+
+    // PROVE: Every worker received the broadcast task
+    assert.ok(
+      content1After.includes(taskAll),
+      `Worker 1 should have received "${taskAll}", got: "${content1After}"`
+    );
+    assert.ok(
+      content2After.includes(taskAll),
+      `Worker 2 should have received "${taskAll}", got: "${content2After}"`
+    );
+    assert.ok(
+      content3After.includes(taskAll),
+      `Worker 3 should have received "${taskAll}", got: "${content3After}"`
+    );
+    // Worker 3 must also retain its previous task
+    assert.ok(content3After.includes(taskWorker3));
+
+    // 5. Test unknown target rejection
+    await assert.rejects(
+      async () => {
+        await dispatchTask({
+          target: "@worker-9",
+          task: "this must fail",
+          baseDir: REPO_ROOT,
+          weztermPath
+        });
+      },
+      (err) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.includes('Unknown target: "@worker-9"'));
+        assert.ok(err.message.includes("Active workers: worker-1, worker-2, worker-3"));
+        return true;
+      }
+    );
+
+    // 6. Stop layout cleanly and verify .swarm/panes.json is deleted
+    const stopResult = await stopSwarmLayout({ log: () => {} });
+    assert.equal(stopResult.ok, true);
+    assert.equal(fs.existsSync(panesMapPath), false, "Expected .swarm/panes.json to be deleted on stop");
+  } finally {
+    for (const f of [tempConfigPath, inbox1, inbox2, inbox3]) {
+      if (fs.existsSync(f)) fs.unlinkSync(f);
     }
   }
 });

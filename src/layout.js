@@ -27,7 +27,13 @@ import {
   listWezTermPanes,
   killWezTermPane
 } from "./wezterm.js";
-import { saveSessionState, loadSessionState, clearSessionState } from "./state.js";
+import {
+  saveSessionState,
+  loadSessionState,
+  clearSessionState,
+  savePanesMap,
+  clearPanesMap
+} from "./state.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -432,6 +438,15 @@ export async function startSwarmLayout(options = {}) {
     panes: createdPanes
   });
 
+  // Save .swarm/panes.json map of worker/orchestrator name -> WezTerm pane ID
+  const panesMap = {};
+  for (const pane of createdPanes) {
+    if (pane.id && pane.paneId !== undefined) {
+      panesMap[pane.id] = pane.paneId;
+    }
+  }
+  savePanesMap(panesMap);
+
   log(`Layout opened successfully in WezTerm (${createdPanes.length} total panes):`);
   for (const pane of createdPanes) {
     log(`  [pane ${pane.paneId}] ${pane.title}`);
@@ -506,8 +521,9 @@ export async function stopSwarmLayout(options = {}) {
     }
   }
 
-  // Clean up session state file
+  // Clean up session state file and .swarm/panes.json
   clearSessionState();
+  clearPanesMap();
 
   const closedCount = killedPaneIds.size;
   log(`Swarm stopped cleanly. Closed ${closedCount} pane(s); no leftover processes.`);
