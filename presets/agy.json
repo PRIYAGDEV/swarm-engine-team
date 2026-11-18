@@ -13,7 +13,7 @@
       "agy --version"
     ],
     "verified_at": "2026-11-18",
-    "notes": "Verified against locally installed agy.EXE 1.5.9 at C:\\Users\\ADMIN\\AppData\\Local\\agy\\bin\\agy.EXE. Model passed via --model <id>. Non-interactive mode via --print / -p."
+    "notes": "Verified against locally installed agy.EXE 1.5.9 (%LOCALAPPDATA%\\agy\\bin\\agy.EXE). Model passed via --model <id>. Non-interactive mode via --print / -p."
   },
   "model_passing": {
     "method": "flag",

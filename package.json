@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Terminal tool that runs multiple AI coding CLIs in separate WezTerm panes (orchestrator + 2x3 worker grid).",
   "type": "module",
+  "license": "MIT",
   "bin": {
     "swarm": "./bin/swarm.js",
     "team": "./bin/swarm.js"

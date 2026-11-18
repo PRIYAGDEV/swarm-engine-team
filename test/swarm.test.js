@@ -285,8 +285,8 @@ test("swarm --dry-run prints launch commands without spawning processes", () => 
 
 test("Stage 2: WezTerm layout opens with stub CLI, shows distinct models per pane, and stops cleanly", async (t) => {
   const weztermPath = findWezTerm();
-  if (!weztermPath) {
-    t.skip("WezTerm is not installed on this system; skipping GUI layout test.");
+  if (process.env.CI || !weztermPath) {
+    t.skip("WezTerm is not available or running in CI; skipping GUI layout test.");
     return;
   }
 
@@ -414,8 +414,8 @@ test("Stage 3: dispatch parser resolves @worker, @all, @workers 1,2,5 syntax and
 
 test("Stage 3: automated task dispatch delivers to worker-3 only, then broadcasts to @all, and cleans panes.json", async (t) => {
   const weztermPath = findWezTerm();
-  if (!weztermPath) {
-    t.skip("WezTerm is not installed on this system; skipping dispatch test.");
+  if (process.env.CI || !weztermPath) {
+    t.skip("WezTerm is not available or running in CI; skipping dispatch test.");
     return;
   }
 
@@ -724,8 +724,8 @@ test("Stage 4: state detection evaluates idle / working / done / error states ac
 
 test("Stage 4: swarm status reports live worker states during session and not running when idle", async (t) => {
   const weztermPath = findWezTerm();
-  if (!weztermPath) {
-    t.skip("WezTerm is not installed on this system; skipping status test.");
+  if (process.env.CI || !weztermPath) {
+    t.skip("WezTerm is not available or running in CI; skipping status test.");
     return;
   }
 
@@ -966,7 +966,11 @@ test("Stage 5: config lookup order prioritizes local swarm.config.json, falls ba
   }
 });
 
-test("Stage 5: install.ps1 and uninstall.ps1 operate on temporary fake PATH without touching real User PATH, avoid duplicates, and handle spaces", () => {
+test("Stage 5: install.ps1 and uninstall.ps1 operate on temporary fake PATH without touching real User PATH, avoid duplicates, and handle spaces", (t) => {
+  if (process.platform !== "win32") {
+    t.skip("PowerShell installer test requires Windows");
+    return;
+  }
   const installScript = path.join(REPO_ROOT, "scripts", "install.ps1");
   const uninstallScript = path.join(REPO_ROOT, "scripts", "uninstall.ps1");
   assert.ok(fs.existsSync(installScript), "scripts/install.ps1 must exist");
