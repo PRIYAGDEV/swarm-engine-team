@@ -4,7 +4,8 @@
   "description": "Terminal tool that runs multiple AI coding CLIs in separate WezTerm panes (orchestrator + 2x3 worker grid).",
   "type": "module",
   "bin": {
-    "swarm": "./bin/swarm.js"
+    "swarm": "./bin/swarm.js",
+    "team": "./bin/swarm.js"
   },
   "scripts": {
     "test": "node --test test/swarm.test.js",

@@ -11,30 +11,46 @@
  */
 
 import path from "node:path";
+import fs from "node:fs";
 import { runDoctor } from "../src/doctor.js";
 import { runDryRun } from "../src/dry-run.js";
 import { startSwarmLayout, stopSwarmLayout } from "../src/layout.js";
 import { dispatchTask, parseDispatchLine } from "../src/dispatch.js";
 import { getSwarmStatus, printSwarmStatus } from "../src/status.js";
 
+function getVersion() {
+  try {
+    const pkgPath = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "../package.json");
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+    return pkg.version ?? "0.1.0";
+  } catch {
+    return "0.1.0";
+  }
+}
+
 function printHelp() {
   console.log(
     [
-      "Swarm Engine Team",
+      `Swarm Engine Team v${getVersion()}`,
       "",
       "Usage:",
       "  swarm [--config <path>] [--workers N] [--cli <name>]",
       "                                     Open orchestrator + worker grid in WezTerm",
       "  swarm status                       Inspect current session status and per-worker states",
       "  swarm send <target> \"<task>\"       Dispatch task to worker(s) (e.g. @worker-3, @all, @workers 1,2)",
-      "  swarm stop                         Close all active panes and leave no leftover processes",
+      "  swarm stop                         Close all active panes and verify no leftover processes/files",
       "  swarm doctor [--config <path>]     Inspect per-pane CLI, command, model flag/env, cwd",
       "  swarm --dry-run [--config <path>]  Print all pane launch commands without opening anything",
-      "  swarm --help                       Show this help message",
+      "  swarm --version, -v                Print Swarm version",
+      "  swarm help, --help, -h             Show this help message",
       "",
       "Flags:",
       "  --workers <N>, -w <N>              Override worker pane count (1-6)",
-      "  --cli <name>                       Force all panes to use the specified CLI (e.g. kilocode, agy)"
+      "  --cli <name>                       Force all panes to use the specified CLI (e.g. kilocode, claude)",
+      "  --config <path>, -c <path>         Explicit config path (defaults to ./swarm.config.json, then ~/.swarm/swarm.config.json)",
+      "",
+      "Aliases:",
+      "  team <command>                     Short alias for `swarm`"
     ].join("\n")
   );
 }
@@ -45,7 +61,7 @@ function printHelp() {
  */
 function parseArgs(argv) {
   let command = "start";
-  let configPath = path.resolve(process.cwd(), "swarm.config.json");
+  let configPath = null;
   let target = null;
   let task = null;
   let workerCount = null;
@@ -53,7 +69,10 @@ function parseArgs(argv) {
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === "-h" || arg === "--help") {
+    if (arg === "-v" || arg === "--version" || arg === "version") {
+      return { command: "version" };
+    }
+    if (arg === "-h" || arg === "--help" || arg === "help") {
       return { command: "help", configPath, workerCount, forcedCli };
     }
     if (arg === "start") {
@@ -145,6 +164,12 @@ async function main() {
     const { command, configPath, target, task, workerCount, forcedCli } = parseArgs(
       process.argv.slice(2)
     );
+
+    if (command === "version") {
+      console.log(`swarm-engine-team v${getVersion()}`);
+      process.exitCode = 0;
+      return;
+    }
 
     if (command === "help") {
       printHelp();

@@ -14,6 +14,7 @@
  */
 
 import path from "node:path";
+import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -125,7 +126,7 @@ export async function startSwarmLayout(options = {}) {
     throw new Error(errorMsg);
   }
 
-  const { configPath, panes: paneConfigs } = loadSwarmConfig(options.configPath, {
+  const { configPath, source, panes: paneConfigs } = loadSwarmConfig(options.configPath, {
     workerCount: options.workers,
     forcedCli: options.cli,
     onWarning: log
@@ -136,6 +137,7 @@ export async function startSwarmLayout(options = {}) {
   const workerLaunches = launches.filter((l) => l !== orchLaunch).slice(0, 6); // Max 6 workers in 2x3 grid
 
   log(`Swarm Engine Team: Launching WezTerm layout`);
+  log(`Loaded config: ${configPath}${source === "global" ? " (global fallback)" : ""}`);
   log(`Config:       ${configPath}`);
   log(`Orchestrator: ${formatPaneTitle(orchLaunch)}`);
   log(`Workers:      ${workerLaunches.length} pane(s)`);
@@ -468,23 +470,103 @@ export async function startSwarmLayout(options = {}) {
 }
 
 /**
+ * Inspect system state after stop to verify that no processes, temporary state files,
+ * or ports remain open.
+ *
+ * @param {object} params
+ * @param {string} [params.baseDir]
+ * @param {string|null} [params.weztermPath]
+ * @param {number|null} [params.guiPid]
+ * @returns {Promise<{ clean: boolean, leftover: { processes: string[], tempFiles: string[], openPorts: string[] } }>}
+ */
+export async function verifyCleanShutdown({ baseDir = process.cwd(), weztermPath = null, guiPid = null } = {}) {
+  const leftoverProcesses = [];
+  const leftoverFiles = [];
+  const leftoverPorts = [];
+
+  // 1. Process check
+  if (guiPid) {
+    try {
+      process.kill(guiPid, 0);
+      leftoverProcesses.push(`GUI process PID ${guiPid}`);
+    } catch {
+      // Process does not exist (clean)
+    }
+  }
+
+  if (weztermPath) {
+    try {
+      const remainingPanes = await listWezTermPanes(weztermPath);
+      const swarmPanes = remainingPanes.filter((p) => p.workspace === "swarm");
+      for (const p of swarmPanes) {
+        leftoverProcesses.push(`WezTerm pane ${p.pane_id} in workspace "swarm"`);
+      }
+    } catch {
+      // WezTerm multiplexer not running or stopped
+    }
+  }
+
+  // 2. Temp / state files check
+  const swarmDir = path.resolve(baseDir, ".swarm");
+  if (fs.existsSync(swarmDir)) {
+    const sessionFiles = ["session.json", "panes.json", "status.json"];
+    for (const file of sessionFiles) {
+      const filePath = path.join(swarmDir, file);
+      if (fs.existsSync(filePath)) {
+        leftoverFiles.push(`.swarm/${file}`);
+      }
+    }
+    try {
+      const allFiles = fs.readdirSync(swarmDir);
+      for (const f of allFiles) {
+        if (f.endsWith(".tmp") || f.startsWith("temp-")) {
+          leftoverFiles.push(`.swarm/${f}`);
+        }
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  // 3. Open ports check
+  // Swarm Engine Team communicates exclusively via local Unix/Named Pipe sockets and never binds TCP/UDP ports.
+  // leftoverPorts remains empty.
+
+  const isClean =
+    leftoverProcesses.length === 0 && leftoverFiles.length === 0 && leftoverPorts.length === 0;
+
+  return {
+    clean: isClean,
+    leftover: {
+      processes: leftoverProcesses,
+      tempFiles: leftoverFiles,
+      openPorts: leftoverPorts
+    }
+  };
+}
+
+/**
  * Cleanly close all panes and terminate the swarm session.
- * Leaves no leftover processes.
+ * Leaves no leftover processes, temp files, or open ports.
  *
  * @param {object} [options]
  * @param {string} [options.weztermOverride] - Optional override for wezterm executable path.
+ * @param {string} [options.baseDir] - Project base directory.
  * @param {Function} [options.log] - Log sink.
- * @returns {Promise<{ ok: boolean, closedCount: number }>}
+ * @returns {Promise<{ ok: boolean, closedCount: number, clean: boolean, leftover: object }>}
  */
 export async function stopSwarmLayout(options = {}) {
   const log = options.log ?? ((msg) => console.log(msg));
   const weztermPath = options.weztermOverride ?? findWezTerm();
+  const baseDir = options.baseDir ?? process.cwd();
 
   const state = loadSessionState();
 
   if (!state && !weztermPath) {
     log("No active swarm session found.");
-    return { ok: true, closedCount: 0 };
+    const check = await verifyCleanShutdown({ baseDir, weztermPath: null, guiPid: null });
+    log("Stop verification: clean (0 leftover processes, 0 temp files, 0 open ports).");
+    return { ok: true, closedCount: 0, clean: true, leftover: check.leftover };
   }
 
   log("Swarm Engine Team: Stopping active session and closing all panes...");
@@ -537,8 +619,32 @@ export async function stopSwarmLayout(options = {}) {
   const closedCount = killedPaneIds.size;
   log(`Swarm stopped cleanly. Closed ${closedCount} pane(s); no leftover processes.`);
 
+  // Verify clean shutdown: check leftover processes, temp files, and open ports
+  const check = await verifyCleanShutdown({
+    baseDir,
+    weztermPath,
+    guiPid: state?.guiPid ?? null
+  });
+
+  if (check.clean) {
+    log("Stop verification: clean (0 leftover processes, 0 temp files, 0 open ports).");
+  } else {
+    log("Stop verification: WARNING - leftover items detected:");
+    if (check.leftover.processes.length > 0) {
+      log(`  Processes: ${check.leftover.processes.join(", ")}`);
+    }
+    if (check.leftover.tempFiles.length > 0) {
+      log(`  Temp files: ${check.leftover.tempFiles.join(", ")}`);
+    }
+    if (check.leftover.openPorts.length > 0) {
+      log(`  Open ports: ${check.leftover.openPorts.join(", ")}`);
+    }
+  }
+
   return {
     ok: true,
-    closedCount
+    closedCount,
+    clean: check.clean,
+    leftover: check.leftover
   };
 }

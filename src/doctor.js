@@ -164,6 +164,7 @@ export function validatePaneLaunches(paneConfigs, launches) {
 export function formatDoctorReport({ configPath, launches, validation }) {
   const lines = [];
   lines.push("Swarm Engine Team — Doctor Report");
+  lines.push(`Loaded config: ${configPath}`);
   lines.push(`Config: ${configPath}`);
   lines.push(`Panes:  ${launches.length}`);
   lines.push("");

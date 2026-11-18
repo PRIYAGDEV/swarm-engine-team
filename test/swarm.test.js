@@ -11,21 +11,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { normalizePaneConfigs, loadSwarmConfig } from "../src/config.js";
+import { normalizePaneConfigs, loadSwarmConfig, checkModelCompatibility, resolveSwarmConfigPath } from "../src/config.js";
 import { buildLaunchCommand, buildAllLaunchCommands } from "../src/launch-builder.js";
 import { listPresetNames, loadPreset } from "../src/presets.js";
 import { GLOBAL_MODEL_ENV_VARS, buildCleanPaneEnv } from "../src/env.js";
 import { runDoctor, validatePaneLaunches } from "../src/doctor.js";
 import { runDryRun } from "../src/dry-run.js";
-import { startSwarmLayout, stopSwarmLayout, formatPaneTitle } from "../src/layout.js";
+import { startSwarmLayout, stopSwarmLayout, formatPaneTitle, verifyCleanShutdown } from "../src/layout.js";
 import { findWezTerm, listWezTermPanes } from "../src/wezterm.js";
 import { dispatchTask, parseDispatchLine, resolveTargetWorkers } from "../src/dispatch.js";
 import { loadPanesMap, getPanesFilePath } from "../src/state.js";
 import { getSwarmStatus, formatStatusBar, evaluateWorkerState } from "../src/status.js";
-import { checkModelCompatibility } from "../src/config.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -885,4 +884,263 @@ test("River AI models belong exclusively to Kilo Code; Claude Code uses Amazon B
   assert.equal(cleanEnv.AWS_ACCESS_KEY_ID, "ASIAEXAMPLEKEY123");
   assert.equal(cleanEnv.AWS_SECRET_ACCESS_KEY, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY");
   assert.equal(cleanEnv.AWS_SESSION_TOKEN, "mock-session-token-xyz");
+});
+
+test("Stage 5: config lookup order prioritizes local swarm.config.json, falls back to %USERPROFILE%/.swarm/swarm.config.json, and preserves current working directory", () => {
+  const tempProjectDir = path.join(REPO_ROOT, ".test-project-space dir");
+  const tempGlobalHome = path.join(REPO_ROOT, ".test-global-home");
+  const tempGlobalSwarmDir = path.join(tempGlobalHome, ".swarm");
+
+  try {
+    fs.mkdirSync(tempProjectDir, { recursive: true });
+    fs.mkdirSync(tempGlobalSwarmDir, { recursive: true });
+
+    const globalConfig = {
+      default_cli: "kilocode",
+      orchestrator: { cli: "claude", model: "sonnet" },
+      workers: [{ cli: "kilocode", model: "river/Qwen/Qwen3.8-27B-FP8" }]
+    };
+    fs.writeFileSync(
+      path.join(tempGlobalSwarmDir, "swarm.config.json"),
+      JSON.stringify(globalConfig, null, 2),
+      "utf8"
+    );
+
+    // 1. When local does NOT exist, falls back to global config
+    const globalLoaded = loadSwarmConfig(null, {
+      currentDir: tempProjectDir,
+      homeDir: tempGlobalHome
+    });
+    assert.equal(globalLoaded.source, "global");
+    assert.equal(
+      globalLoaded.configPath,
+      path.join(tempGlobalSwarmDir, "swarm.config.json")
+    );
+    // Crucial check: All panes must use the project's CURRENT directory, NOT the global directory
+    for (const pane of globalLoaded.panes) {
+      assert.equal(
+        pane.cwd,
+        tempProjectDir,
+        `Expected pane ${pane.id} cwd to be current project dir ${tempProjectDir}`
+      );
+    }
+
+    // 2. When local DOES exist, local takes precedence over global
+    const localConfig = {
+      default_cli: "kilocode",
+      orchestrator: { cli: "claude", model: "anthropic.claude-3-5-sonnet-20241022-v2:0" },
+      workers: [{ cli: "kilocode", model: "river/deepseek-ai/DeepSeek-V4.1-Flash" }]
+    };
+    fs.writeFileSync(
+      path.join(tempProjectDir, "swarm.config.json"),
+      JSON.stringify(localConfig, null, 2),
+      "utf8"
+    );
+
+    const localLoaded = loadSwarmConfig(null, {
+      currentDir: tempProjectDir,
+      homeDir: tempGlobalHome
+    });
+    assert.equal(localLoaded.source, "local");
+    assert.equal(localLoaded.configPath, path.join(tempProjectDir, "swarm.config.json"));
+    assert.equal(localLoaded.panes[0].model, "anthropic.claude-3-5-sonnet-20241022-v2:0");
+
+    // 3. Explicit config path takes highest precedence
+    const explicitLoaded = loadSwarmConfig(path.join(tempGlobalSwarmDir, "swarm.config.json"), {
+      currentDir: tempProjectDir,
+      homeDir: tempGlobalHome
+    });
+    assert.equal(explicitLoaded.source, "explicit");
+
+    // 4. Missing both local and global throws descriptive error
+    fs.unlinkSync(path.join(tempProjectDir, "swarm.config.json"));
+    fs.unlinkSync(path.join(tempGlobalSwarmDir, "swarm.config.json"));
+
+    assert.throws(
+      () => resolveSwarmConfigPath(null, tempProjectDir, tempGlobalHome),
+      /No swarm\.config\.json found in current directory/
+    );
+  } finally {
+    fs.rmSync(tempProjectDir, { recursive: true, force: true });
+    fs.rmSync(tempGlobalHome, { recursive: true, force: true });
+  }
+});
+
+test("Stage 5: install.ps1 and uninstall.ps1 operate on temporary fake PATH without touching real User PATH, avoid duplicates, and handle spaces", () => {
+  const installScript = path.join(REPO_ROOT, "scripts", "install.ps1");
+  const uninstallScript = path.join(REPO_ROOT, "scripts", "uninstall.ps1");
+  assert.ok(fs.existsSync(installScript), "scripts/install.ps1 must exist");
+  assert.ok(fs.existsSync(uninstallScript), "scripts/uninstall.ps1 must exist");
+
+  // Query real User PATH before testing to verify it is never touched
+  const queryRealUserPath = () => {
+    const res = spawnSync("powershell.exe", [
+      "-NoProfile",
+      "-Command",
+      '[Environment]::GetEnvironmentVariable("Path", "User")'
+    ], { encoding: "utf8" });
+    return (res.stdout ?? "").trim();
+  };
+
+  const realPathBefore = queryRealUserPath();
+  const fakeInitialPath = "C:\\Existing\\Tools;C:\\AppData\\Local\\Programs";
+  const targetBinWithSpaces = path.join(REPO_ROOT, "bin");
+
+  // 1. Run install.ps1 in isolated test mode (-CustomUserPath, -PassThru)
+  const installRes = spawnSync("powershell.exe", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    installScript,
+    "-TargetBinDir",
+    targetBinWithSpaces,
+    "-CustomUserPath",
+    fakeInitialPath,
+    "-PassThru"
+  ], { encoding: "utf8" });
+
+  assert.equal(installRes.status, 0, `install.ps1 failed: ${installRes.stderr}`);
+  const installOutput = installRes.stdout;
+  assert.ok(
+    installOutput.includes("Successfully added to User PATH"),
+    `Expected success message in output: ${installOutput}`
+  );
+  assert.ok(installOutput.includes("Commands:        swarm, team"));
+  assert.ok(installOutput.includes("Background/Auto: NONE"));
+
+  // Resulting path must contain the target bin directory
+  const lines = installOutput.trim().split(/\r?\n/);
+  const installedPath = lines[lines.length - 1];
+  assert.ok(installedPath.includes(targetBinWithSpaces));
+
+  // 2. Run install.ps1 a second time on the resulting PATH to test idempotency / duplicate avoidance
+  const installAgainRes = spawnSync("powershell.exe", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    installScript,
+    "-TargetBinDir",
+    targetBinWithSpaces,
+    "-CustomUserPath",
+    installedPath,
+    "-PassThru"
+  ], { encoding: "utf8" });
+
+  assert.equal(installAgainRes.status, 0);
+  assert.ok(
+    installAgainRes.stdout.includes("Already installed"),
+    `Expected already installed duplicate avoidance: ${installAgainRes.stdout}`
+  );
+  const pathAfterSecondInstall = installAgainRes.stdout.trim().split(/\r?\n/).pop();
+  assert.equal(pathAfterSecondInstall, installedPath, "Second install should not duplicate path");
+
+  // 3. Run uninstall.ps1 in isolated test mode
+  const uninstallRes = spawnSync("powershell.exe", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    uninstallScript,
+    "-TargetBinDir",
+    targetBinWithSpaces,
+    "-CustomUserPath",
+    installedPath,
+    "-PassThru"
+  ], { encoding: "utf8" });
+
+  assert.equal(uninstallRes.status, 0, `uninstall.ps1 failed: ${uninstallRes.stderr}`);
+  const uninstallOutput = uninstallRes.stdout;
+  assert.ok(
+    uninstallOutput.includes("Successfully removed from User PATH"),
+    `Expected removal message in output: ${uninstallOutput}`
+  );
+  assert.ok(uninstallOutput.includes(targetBinWithSpaces));
+  const uninstalledPath = uninstallOutput.trim().split(/\r?\n/).pop();
+  assert.equal(uninstalledPath, fakeInitialPath, "Uninstall should restore initial fake PATH exactly");
+
+  // 4. Run uninstall.ps1 when target is already absent
+  const uninstallAgainRes = spawnSync("powershell.exe", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    uninstallScript,
+    "-TargetBinDir",
+    targetBinWithSpaces,
+    "-CustomUserPath",
+    uninstalledPath,
+    "-PassThru"
+  ], { encoding: "utf8" });
+
+  assert.equal(uninstallAgainRes.status, 0);
+  assert.ok(uninstallAgainRes.stdout.includes("Nothing removed"));
+
+  // 5. PROVE: Real registry User PATH was never modified
+  const realPathAfter = queryRealUserPath();
+  assert.equal(
+    realPathAfter,
+    realPathBefore,
+    "Real User PATH in registry must remain completely untouched during test"
+  );
+});
+
+test("Stage 5: swarm --version and swarm help CLI commands", () => {
+  const swarmJs = path.join(REPO_ROOT, "bin", "swarm.js");
+
+  // 1. Test swarm --version and -v
+  const resVer = spawnSync(process.execPath, [swarmJs, "--version"], { encoding: "utf8" });
+  assert.equal(resVer.status, 0);
+  assert.ok(resVer.stdout.includes("swarm-engine-team v0.1.0"));
+
+  const resShortVer = spawnSync(process.execPath, [swarmJs, "-v"], { encoding: "utf8" });
+  assert.equal(resShortVer.status, 0);
+  assert.ok(resShortVer.stdout.includes("0.1.0"));
+
+  // 2. Test swarm help and --help
+  const resHelp = spawnSync(process.execPath, [swarmJs, "help"], { encoding: "utf8" });
+  assert.equal(resHelp.status, 0);
+  assert.ok(resHelp.stdout.includes("Usage:"));
+  assert.ok(resHelp.stdout.includes("swarm stop"));
+  assert.ok(resHelp.stdout.includes("team <command>"));
+
+  const resFlagHelp = spawnSync(process.execPath, [swarmJs, "--help"], { encoding: "utf8" });
+  assert.equal(resFlagHelp.status, 0);
+  assert.ok(resFlagHelp.stdout.includes("Usage:"));
+});
+
+test("Stage 5: stopSwarmLayout verifies clean shutdown (no leftover processes, temp files, or ports)", async () => {
+  // Test clean verification check on clean workspace
+  const cleanCheck = await verifyCleanShutdown({ baseDir: REPO_ROOT });
+  assert.equal(cleanCheck.clean, true);
+  assert.deepEqual(cleanCheck.leftover.processes, []);
+  assert.deepEqual(cleanCheck.leftover.tempFiles, []);
+  assert.deepEqual(cleanCheck.leftover.openPorts, []);
+
+  // Simulate a leftover temporary file in .swarm/ to verify detector catches it
+  const swarmDir = path.join(REPO_ROOT, ".swarm");
+  const leftoverTempFile = path.join(swarmDir, "temp-dangling-worker.tmp");
+  fs.mkdirSync(swarmDir, { recursive: true });
+  fs.writeFileSync(leftoverTempFile, "dangling", "utf8");
+
+  try {
+    const dirtyCheck = await verifyCleanShutdown({ baseDir: REPO_ROOT });
+    assert.equal(dirtyCheck.clean, false);
+    assert.ok(dirtyCheck.leftover.tempFiles.some((f) => f.includes("temp-dangling-worker.tmp")));
+  } finally {
+    if (fs.existsSync(leftoverTempFile)) {
+      fs.unlinkSync(leftoverTempFile);
+    }
+  }
+
+  // Verify stopSwarmLayout output contains "clean"
+  const logs = [];
+  const stopResult = await stopSwarmLayout({
+    baseDir: REPO_ROOT,
+    log: (msg) => logs.push(msg)
+  });
+  assert.equal(stopResult.ok, true);
+  assert.equal(stopResult.clean, true);
+  assert.ok(logs.some((l) => l.includes("clean")));
 });

@@ -18,6 +18,7 @@ import { buildAllLaunchCommands } from "./launch-builder.js";
 export function formatDryRunOutput({ configPath, launches }) {
   const lines = [];
   lines.push("Swarm Engine Team — Dry Run (no processes or panes opened)");
+  lines.push(`Loaded config: ${configPath}`);
   lines.push(`Config: ${configPath}`);
   lines.push("");
 

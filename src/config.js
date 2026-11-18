@@ -5,6 +5,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 
 /**
  * Deep-freeze an object graph so nothing can mutate a pane config after creation.
@@ -310,31 +311,73 @@ export function normalizePaneConfigs(rawConfig, baseDir = process.cwd(), overrid
 }
 
 /**
- * Load and validate swarm.config.json from disk.
+ * Resolve the configuration file path following the lookup order:
+ * 1. Explicit path passed by caller (e.g. --config <path>)
+ * 2. Current working directory: ./swarm.config.json
+ * 3. Global user profile fallback: %USERPROFILE%/.swarm/swarm.config.json
  *
- * @param {string} [configPath] - Path to config file (defaults to ./swarm.config.json).
- * @param {object} [overrides] - Optional overrides ({ workerCount, forcedCli, onWarning }).
- * @returns {{ configPath: string, rawConfig: object, panes: object[] }}
+ * @param {string} [explicitPath] - Optional path explicitly provided via --config / options.
+ * @param {string} [currentDir] - Working directory to search first (defaults to process.cwd()).
+ * @param {string} [homeDir] - User home directory for global config (defaults to os.homedir()).
+ * @returns {{ resolvedPath: string, source: "explicit" | "local" | "global" }}
  */
-export function loadSwarmConfig(
-  configPath = path.resolve(process.cwd(), "swarm.config.json"),
-  overrides = {}
+export function resolveSwarmConfigPath(
+  explicitPath,
+  currentDir = process.cwd(),
+  homeDir = os.homedir()
 ) {
-  const resolvedPath = path.resolve(configPath);
-  if (!fs.existsSync(resolvedPath)) {
-    throw new Error(
-      `Config file not found at "${resolvedPath}". ` +
-        `Copy swarm.config.example.json to swarm.config.json or pass --config <path>.`
-    );
+  if (explicitPath && typeof explicitPath === "string" && explicitPath.trim() !== "") {
+    const resolved = path.resolve(currentDir, explicitPath);
+    if (!fs.existsSync(resolved)) {
+      throw new Error(`Config file not found at "${resolved}".`);
+    }
+    return { resolvedPath: resolved, source: "explicit" };
   }
+
+  // 1. Check local project directory first
+  const localPath = path.resolve(currentDir, "swarm.config.json");
+  if (fs.existsSync(localPath)) {
+    return { resolvedPath: localPath, source: "local" };
+  }
+
+  // 2. Check global user profile: %USERPROFILE%/.swarm/swarm.config.json
+  const globalPath = path.resolve(homeDir, ".swarm", "swarm.config.json");
+  if (fs.existsSync(globalPath)) {
+    return { resolvedPath: globalPath, source: "global" };
+  }
+
+  throw new Error(
+    `No swarm.config.json found in current directory ("${localPath}") ` +
+      `or global directory ("${globalPath}"). ` +
+      `Copy swarm.config.example.json to swarm.config.json or pass --config <path>.`
+  );
+}
+
+/**
+ * Load and validate swarm.config.json from disk following local -> global lookup order.
+ * Ensures the CURRENT folder is used as the working directory for all panes.
+ *
+ * @param {string} [configPath] - Optional explicit path to config file.
+ * @param {object} [overrides] - Optional overrides ({ workerCount, forcedCli, onWarning, currentDir, homeDir }).
+ * @returns {{ configPath: string, source: "explicit" | "local" | "global", rawConfig: object, panes: object[] }}
+ */
+export function loadSwarmConfig(configPath, overrides = {}) {
+  const currentDir = overrides.currentDir ?? process.cwd();
+  const homeDir = overrides.homeDir ?? os.homedir();
+
+  const { resolvedPath, source } = resolveSwarmConfigPath(configPath, currentDir, homeDir);
 
   const rawText = fs.readFileSync(resolvedPath, "utf8");
   const rawConfig = JSON.parse(rawText);
-  const baseDir = path.dirname(resolvedPath);
+
+  // Requirement 4: swarm must use the CURRENT folder as the working directory,
+  // even when loaded from the global config.
+  const baseDir = currentDir;
   const panes = normalizePaneConfigs(rawConfig, baseDir, overrides);
 
   return {
     configPath: resolvedPath,
+    source,
     rawConfig,
     panes
   };
