@@ -11,6 +11,89 @@
  * Never invents made-up defaults.
  */
 
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import { DatabaseSync } from "node:sqlite";
+
+/**
+ * Extract active Kilo Code session and subagent metadata from kilo.db.
+ * @returns {{ parentId: string, parentTitle: string, parentModel: string, parentDirectory: string, workers: Array<{ id: string, title: string, model: string, directory: string }> } | null}
+ */
+export function getKiloSubagents() {
+  try {
+    const dbPath = path.join(os.homedir(), ".local", "share", "kilo", "kilo.db");
+    if (!fs.existsSync(dbPath)) return null;
+
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+
+    const parent = db
+      .prepare(
+        "SELECT id, title, model, directory FROM session WHERE parent_id IS NULL AND time_archived IS NULL ORDER BY time_updated DESC LIMIT 1"
+      )
+      .get();
+
+    if (!parent) return null;
+
+    let parentModel = null;
+    if (parent.model) {
+      try {
+        const parsed = JSON.parse(parent.model);
+        if (parsed.id) {
+          const provider = parsed.providerID ? `${parsed.providerID}/` : "";
+          parentModel = `${provider}${parsed.id}`;
+        }
+      } catch {}
+    }
+
+    const subagents = db
+      .prepare(
+        "SELECT id, title, model, directory FROM session WHERE parent_id = ? AND time_archived IS NULL ORDER BY time_updated DESC LIMIT 6"
+      )
+      .all(parent.id);
+
+    const workers = subagents.map((s) => {
+      let workerModel = parentModel;
+      if (s.model) {
+        try {
+          const parsed = JSON.parse(s.model);
+          if (parsed.id) {
+            const provider = parsed.providerID ? `${parsed.providerID}/` : "";
+            workerModel = `${provider}${parsed.id}`;
+          }
+        } catch {}
+      }
+      const cleanTitle = s.title.replace(/\s*\(@worker subagent\)/i, "").trim();
+      return {
+        id: s.id,
+        title: cleanTitle,
+        model: workerModel,
+        directory: s.directory
+      };
+    });
+
+    return {
+      parentId: parent.id,
+      parentTitle: parent.title,
+      parentModel,
+      parentDirectory: parent.directory,
+      workers
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract array of active subagent models from Kilo Code.
+ * @returns {string[]}
+ */
+export function getKiloWorkerModels() {
+  const data = getKiloSubagents();
+  if (!data) return [];
+  return data.workers.map((w) => w.model).filter(Boolean);
+}
+
 /**
  * Known model flags across supported AI coding CLIs.
  */
@@ -97,6 +180,24 @@ export function detectActiveEnvironmentModel(env = process.env) {
   if (typeof env.OPENAI_MODEL === "string" && env.OPENAI_MODEL.trim() !== "") {
     return env.OPENAI_MODEL.trim();
   }
+
+  // 3. Kilo Code active session in kilo.db
+  const kiloData = getKiloSubagents();
+  if (kiloData && kiloData.parentModel) {
+    return kiloData.parentModel;
+  }
+
+  // 4. Kilo Code global config (kilo.jsonc)
+  try {
+    const configPath = path.join(os.homedir(), ".kilo", "kilo.jsonc");
+    if (fs.existsSync(configPath)) {
+      const raw = fs.readFileSync(configPath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.model === "string" && parsed.model.trim() !== "") {
+        return parsed.model.trim();
+      }
+    }
+  } catch {}
 
   return null;
 }

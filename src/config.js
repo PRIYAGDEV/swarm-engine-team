@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { getKiloWorkerModels, getKiloSubagents } from "./model-detect.js";
 
 /**
  * Deep-freeze an object graph so nothing can mutate a pane config after creation.
@@ -121,12 +122,7 @@ export function checkModelCompatibility(cli, model) {
   }
 
   if (c === "kilocode" || c === "kilo") {
-    if (!m.includes("/") && !m.includes("kilo")) {
-      return {
-        compatible: false,
-        warning: `Model "${model}" does not include a provider prefix (e.g. River AI models: "river/<provider>/<model>").`
-      };
-    }
+    return { compatible: true };
   }
 
   return { compatible: true };
@@ -175,7 +171,8 @@ function createPaneConfig(rawPane, { id, role, defaultCli, baseDir, forcedCli, f
       ? activeModel.trim()
       : null;
 
-  const resolvedModel = rawLaunchModel ?? rawConfigModel ?? rawActiveModel;
+  // Observable priority: [1] launch flag -> [2] configured model -> [3] active environment -> [4] null
+  const resolvedModel = rawLaunchModel ?? rawConfigModel ?? rawActiveModel ?? null;
 
   // Verify model compatibility and warn if it does not fit
   if (forcedCli && typeof resolvedModel === "string" && resolvedModel.trim() !== "") {
@@ -287,6 +284,10 @@ export function normalizePaneConfigs(rawConfig, baseDir = process.cwd(), overrid
 
   const panes = [];
 
+  const kiloData = getKiloSubagents();
+  const effectiveOrchModel =
+    rawConfig.orchestrator?.model ? null : (activeModel ?? kiloData?.parentModel ?? null);
+
   if (rawConfig.orchestrator !== undefined) {
     panes.push(
       createPaneConfig(rawConfig.orchestrator, {
@@ -296,7 +297,7 @@ export function normalizePaneConfigs(rawConfig, baseDir = process.cwd(), overrid
         baseDir,
         forcedCli,
         forcedModel,
-        activeModel,
+        activeModel: effectiveOrchModel,
         onWarning
       })
     );
@@ -318,8 +319,12 @@ export function normalizePaneConfigs(rawConfig, baseDir = process.cwd(), overrid
       }
     }
 
+    const kiloWorkerModels = getKiloWorkerModels();
+
     for (let index = 0; index < rawWorkers.length; index += 1) {
       const workerEntry = rawWorkers[index];
+      const workerActiveModel =
+        workerEntry.model ? null : (kiloWorkerModels[index] ?? effectiveOrchModel ?? activeModel);
       panes.push(
         createPaneConfig(workerEntry, {
           id: `worker-${index + 1}`,
@@ -328,7 +333,7 @@ export function normalizePaneConfigs(rawConfig, baseDir = process.cwd(), overrid
           baseDir,
           forcedCli,
           forcedModel,
-          activeModel,
+          activeModel: workerActiveModel,
           onWarning
         })
       );

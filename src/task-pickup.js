@@ -13,10 +13,74 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 
 export const SWARM_DIR = ".swarm";
 export const LAST_TASK_FILENAME = "last-task.txt";
+
+/**
+ * Extract active task context from Kilo Code's local database if present.
+ * @param {string} [baseDir=process.cwd()]
+ * @param {object} [options]
+ * @param {boolean} [options.matchDirOnly=false]
+ * @returns {string|null}
+ */
+export function getKiloTaskContext(baseDir = process.cwd(), { matchDirOnly = false } = {}) {
+  try {
+    const dbPath = path.join(os.homedir(), ".local", "share", "kilo", "kilo.db");
+    if (!fs.existsSync(dbPath)) return null;
+
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+
+    // Find latest active parent session
+    const main = db
+      .prepare(
+        "SELECT id, title, directory FROM session WHERE parent_id IS NULL AND time_archived IS NULL ORDER BY time_updated DESC LIMIT 1"
+      )
+      .get();
+
+    if (!main || !main.title) return null;
+
+    if (matchDirOnly && main.directory) {
+      const normBase = path.resolve(baseDir).toLowerCase().replace(/\\/g, "/");
+      const normDir = path.resolve(main.directory).toLowerCase().replace(/\\/g, "/");
+      if (normBase !== normDir && !normBase.startsWith(normDir + "/")) {
+        return null;
+      }
+    }
+
+    // Find active subagents or pending todos
+    const subagents = db
+      .prepare(
+        "SELECT title FROM session WHERE parent_id = ? AND time_archived IS NULL ORDER BY time_updated DESC LIMIT 3"
+      )
+      .all(main.id);
+
+    const subTitles = subagents
+      .map((s) => s.title.replace(/\s*\(@worker subagent\)/i, "").trim())
+      .filter(Boolean);
+
+    if (subTitles.length > 0) {
+      return `${main.title} (${subTitles.join(", ")})`;
+    }
+
+    const todos = db
+      .prepare(
+        "SELECT content FROM todo WHERE session_id = ? AND status = ? ORDER BY position ASC LIMIT 3"
+      )
+      .all(main.id, "pending");
+
+    if (todos.length > 0) {
+      return `${main.title}: ${todos.map((t) => t.content).join(", ")}`;
+    }
+
+    return main.title;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Get path to .swarm/last-task.txt.
@@ -165,7 +229,16 @@ export function resolveInitialTask({ explicitTask, baseDir = process.cwd() } = {
     };
   }
 
-  // 3. Git repository context
+  // 3. Match Kilo Code session directory if current dir matches
+  const kiloExactDirContext = getKiloTaskContext(baseDir, { matchDirOnly: true });
+  if (kiloExactDirContext) {
+    return {
+      task: kiloExactDirContext,
+      source: "kilo_session"
+    };
+  }
+
+  // 4. Git repository context
   const gitContext = getGitTaskContext(baseDir);
   if (gitContext) {
     return {
@@ -174,7 +247,16 @@ export function resolveInitialTask({ explicitTask, baseDir = process.cwd() } = {
     };
   }
 
-  // 4. Standby default
+  // 5. Active Kilo Code session context (general fallback)
+  const kiloGeneralContext = getKiloTaskContext(baseDir, { matchDirOnly: false });
+  if (kiloGeneralContext) {
+    return {
+      task: kiloGeneralContext,
+      source: "kilo_session"
+    };
+  }
+
+  // 6. Standby default
   return {
     task: "Standby for orchestrator prompts",
     source: "default"

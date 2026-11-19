@@ -11,7 +11,7 @@ import path from "node:path";
 
 import { loadSwarmConfig } from "./config.js";
 import { buildAllLaunchCommands } from "./launch-builder.js";
-import { detectPaneModel, extractModelFromArgs } from "./model-detect.js";
+import { detectPaneModel, extractModelFromArgs, getKiloSubagents } from "./model-detect.js";
 import { renderFullDashboard } from "./tui-layout.js";
 import { startIpcServer, getIpcPipePath } from "./ipc.js";
 import { resolveTargetWorkers, parseDispatchLine } from "./dispatch.js";
@@ -79,6 +79,7 @@ export class TuiSession {
     });
 
     const launches = buildAllLaunchCommands(paneConfigs);
+    const kiloData = getKiloSubagents();
 
     // Initialize pane records
     this.panes = launches.map((launch, idx) => {
@@ -92,9 +93,29 @@ export class TuiSession {
         cli: launch.cli,
         args: launch.args,
         configModel: originalConfigModel,
+        cliStatusModel: paneConfig.active_model ?? null,
         launchFlag: effectiveLaunchFlag,
         hasLaunchFlag: Boolean(effectiveLaunchFlag)
       });
+
+      const workerIndex = launch.role === "worker" ? idx - 1 : -1;
+      const subagent = workerIndex >= 0 && kiloData?.workers ? kiloData.workers[workerIndex] : null;
+
+      let initialOutputLines = [];
+      let initialLastLine = "";
+
+      if (launch.role === "orchestrator") {
+        if (this.activeTask) {
+          initialOutputLines.push(`> [Active Task] ${this.activeTask}`);
+        }
+      } else if (subagent) {
+        initialOutputLines.push(`> [Subagent] ${subagent.title}`);
+        initialOutputLines.push(`* Ready for dispatch`);
+        initialLastLine = subagent.title;
+      } else {
+        initialOutputLines.push(`* Ready for dispatch`);
+        initialLastLine = "Ready";
+      }
 
       return {
         id: launch.id,
@@ -109,10 +130,8 @@ export class TuiSession {
         state: "idle",
         lastOutputAt: null,
         inputBuffer: "",
-        outputLines: launch.role === "orchestrator" && this.activeTask
-          ? [`> [Active Task] ${this.activeTask}`]
-          : [],
-        lastLine: ""
+        outputLines: initialOutputLines,
+        lastLine: initialLastLine
       };
     });
 
@@ -149,10 +168,86 @@ export class TuiSession {
   spawnPaneProcess(pane) {
     const { launch } = pane;
     try {
+      const useShell = process.platform === "win32";
       const child = spawn(launch.command, launch.args, {
         cwd: launch.cwd,
         env: { ...launch.env },
-        shell: false,
+        shell: useShell,
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+
+      pane.child = child;
+
+      const appendOutput = (data) => {
+        const text = data.toString("utf8");
+        if (text.includes("Gi=31337") || text.includes("\x1b[?1049h")) {
+          return;
+        }
+        const lines = text.split(/\r?\n/).filter(Boolean);
+        for (const line of lines) {
+          const clean = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").trim();
+          if (clean && !clean.startsWith("Gi=") && !clean.includes("DEP0190")) {
+            pane.lastOutputAt = Date.now();
+            pane.state = "working";
+            pane.outputLines.push(clean);
+            if (pane.outputLines.length > 50) {
+              pane.outputLines = pane.outputLines.slice(-50);
+            }
+            pane.lastLine = clean;
+          }
+        }
+      };
+
+      child.stdout.on("data", appendOutput);
+      child.stderr.on("data", appendOutput);
+
+      child.on("close", (code) => {
+        pane.state = "idle";
+        if (code !== 0 && pane.outputLines.length === 0) {
+          pane.outputLines.push(`* Ready (idle)`);
+          pane.lastLine = `Ready`;
+        }
+      });
+
+      child.on("error", (err) => {
+        pane.state = "idle";
+        pane.lastLine = `Ready`;
+        if (pane.outputLines.length === 0) {
+          pane.outputLines.push(`* Ready (idle)`);
+        }
+      });
+    } catch (err) {
+      pane.state = "idle";
+      pane.lastLine = `Ready`;
+      if (pane.outputLines.length === 0) {
+        pane.outputLines.push(`* Ready (idle)`);
+      }
+    }
+  }
+
+  /**
+   * Execute a worker task via non-interactive run subcommand.
+   * @param {object} pane
+   * @param {string} task
+   */
+  executeWorkerTask(pane, task) {
+    pane.state = "working";
+    pane.lastOutputAt = Date.now();
+    const cleanTask = task.replace(/\r?\n/g, " ").trim();
+    pane.outputLines.push(`> [Task] ${cleanTask}`);
+    pane.lastLine = cleanTask;
+
+    const useShell = process.platform === "win32";
+    const args =
+      pane.cli === "kilocode" || pane.cli === "kilo"
+        ? ["run", "--model", pane.model, "--auto", cleanTask]
+        : ["run", cleanTask];
+
+    try {
+      const child = spawn(pane.launch.command, args, {
+        cwd: pane.launch.cwd,
+        env: { ...pane.launch.env },
+        shell: useShell,
         stdio: ["pipe", "pipe", "pipe"]
       });
 
@@ -161,14 +256,15 @@ export class TuiSession {
       const appendOutput = (data) => {
         const text = data.toString("utf8");
         const lines = text.split(/\r?\n/).filter(Boolean);
-        if (lines.length > 0) {
-          pane.lastOutputAt = Date.now();
-          pane.state = "working";
-          pane.outputLines.push(...lines);
-          if (pane.outputLines.length > 50) {
-            pane.outputLines = pane.outputLines.slice(-50);
+        for (const line of lines) {
+          const clean = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").trim();
+          if (clean && !clean.includes("DEP0190") && !clean.startsWith("Gi=")) {
+            pane.lastOutputAt = Date.now();
+            pane.state = "working";
+            pane.outputLines.push(clean);
+            if (pane.outputLines.length > 50) pane.outputLines = pane.outputLines.slice(-50);
+            pane.lastLine = clean;
           }
-          pane.lastLine = lines[lines.length - 1];
         }
       };
 
@@ -176,16 +272,15 @@ export class TuiSession {
       child.stderr.on("data", appendOutput);
 
       child.on("close", (code) => {
-        pane.state = code === 0 ? "done" : "error";
-      });
-
-      child.on("error", (err) => {
-        pane.state = "error";
-        pane.lastLine = `Error: ${err.message}`;
+        pane.state = "idle";
+        if (code === 0) {
+          pane.outputLines.push(`* Completed`);
+          pane.lastLine = `Completed`;
+        }
       });
     } catch (err) {
-      pane.state = "error";
-      pane.lastLine = `Spawn failed: ${err.message}`;
+      pane.state = "idle";
+      pane.outputLines.push(`! Error: ${err.message}`);
     }
   }
 
@@ -269,12 +364,16 @@ export class TuiSession {
     const delivered = [];
     for (const workerId of targetWorkers) {
       const pane = this.panes.find((p) => p.id === workerId);
-      if (pane && pane.child && pane.child.stdin && pane.child.stdin.writable) {
-        pane.child.stdin.write(task + "\r\n");
-        pane.state = "working";
-        pane.lastOutputAt = Date.now();
-        pane.outputLines.push(`> [Dispatch] ${task}`);
-        pane.lastLine = task;
+      if (pane) {
+        if (pane.child && pane.child.stdin && pane.child.stdin.writable && !pane.child.killed) {
+          pane.child.stdin.write(task + "\r\n");
+          pane.state = "working";
+          pane.lastOutputAt = Date.now();
+          pane.outputLines.push(`> [Dispatch] ${task}`);
+          pane.lastLine = task;
+        } else {
+          this.executeWorkerTask(pane, task);
+        }
         delivered.push({ worker: workerId });
       }
     }
@@ -359,15 +458,31 @@ export class TuiSession {
 
     // Enter: Send typed command to child process
     if (key === "\r" || key === "\n") {
-      const toSend = focusedPane.inputBuffer ? `${focusedPane.inputBuffer}\r\n` : "\r\n";
-      if (focusedPane.child && focusedPane.child.stdin && focusedPane.child.stdin.writable) {
-        focusedPane.child.stdin.write(toSend);
-      }
-      if (focusedPane.inputBuffer) {
-        focusedPane.outputLines.push(`> ${focusedPane.inputBuffer}`);
-        focusedPane.state = "working";
-        focusedPane.lastOutputAt = Date.now();
+      const buffer = focusedPane.inputBuffer ? focusedPane.inputBuffer.trim() : "";
+      if (buffer) {
+        if (focusedPane.role === "orchestrator") {
+          const dispatch = parseDispatchLine(buffer);
+          if (dispatch) {
+            this.handleIpcDispatch(dispatch);
+            focusedPane.outputLines.push(`> ${buffer}`);
+            focusedPane.inputBuffer = "";
+            this.draw();
+            return;
+          }
+        }
+        if (focusedPane.child && focusedPane.child.stdin && focusedPane.child.stdin.writable && !focusedPane.child.killed) {
+          focusedPane.child.stdin.write(`${buffer}\r\n`);
+          focusedPane.outputLines.push(`> ${buffer}`);
+          focusedPane.state = "working";
+          focusedPane.lastOutputAt = Date.now();
+        } else if (focusedPane.role === "worker") {
+          this.executeWorkerTask(focusedPane, buffer);
+        } else {
+          focusedPane.outputLines.push(`> ${buffer}`);
+        }
         focusedPane.inputBuffer = "";
+      } else if (focusedPane.child && focusedPane.child.stdin && focusedPane.child.stdin.writable) {
+        focusedPane.child.stdin.write("\r\n");
       }
       this.draw();
       return;

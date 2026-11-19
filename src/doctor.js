@@ -244,6 +244,7 @@ export function runDoctor(options = {}) {
         cli: launch.cli,
         args: launch.args,
         configModel: originalConfigModel,
+        cliStatusModel: paneConfig.active_model ?? null,
         launchFlag: effectiveLaunchFlag,
         hasLaunchFlag: Boolean(effectiveLaunchFlag)
       });
